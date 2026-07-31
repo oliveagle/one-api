@@ -50,6 +50,11 @@ type ChannelConfig struct {
 	Plugin            string `json:"plugin,omitempty"`
 	VertexAIProjectID string `json:"vertex_ai_project_id,omitempty"`
 	VertexAIADC       string `json:"vertex_ai_adc,omitempty"`
+	// ManageKey is an account-management credential that is distinct from the
+	// relay credential stored in Channel.Key. Some upstreams (e.g. AIHubMix)
+	// refuse to expose account balance to the regular API key and require a
+	// separate system access token instead.
+	ManageKey string `json:"manage_key,omitempty"`
 }
 
 func GetAllChannels(startIdx int, num int, scope string) ([]*Channel, error) {

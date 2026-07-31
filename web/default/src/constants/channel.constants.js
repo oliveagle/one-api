@@ -83,6 +83,7 @@ export const CHANNEL_OPTIONS = [
   { key: 42, text: 'VertexAI', value: 42, color: 'blue' },
   { key: 43, text: 'Proxy', value: 43, color: 'blue' },
   { key: 44, text: 'SiliconFlow', value: 44, color: 'blue' },
+  { key: 52, text: 'AIHubMix', value: 52, color: 'violet' },
   { key: 45, text: 'xAI', value: 45, color: 'blue' },
   { key: 46, text: 'Replicate', value: 46, color: 'blue' },
   {
