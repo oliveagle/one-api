@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/songquanpeng/one-api/common/client"
@@ -119,10 +120,33 @@ type OpenRouterResponse struct {
 	} `json:"data"`
 }
 
+// AIHubMixUserResponse models GET /api/user/self on AIHubMix.
+// AIHubMix is a one-api derivative, so `quota` / `used_quota` are integers in
+// one-api's internal quota unit and must be divided by QuotaPerUnit to get USD.
+type AIHubMixUserResponse struct {
+	Success bool   `json:"success"`
+	Message string `json:"message"`
+	Data    struct {
+		Username  string `json:"username"`
+		Quota     int64  `json:"quota"`
+		UsedQuota int64  `json:"used_quota"`
+	} `json:"data"`
+}
+
 // GetAuthHeader get auth header
 func GetAuthHeader(token string) http.Header {
 	h := http.Header{}
 	h.Add("Authorization", fmt.Sprintf("Bearer %s", token))
+	return h
+}
+
+// GetRawAuthHeader builds an Authorization header carrying the bare token,
+// without the "Bearer " prefix. AIHubMix's management API rejects the prefixed
+// form with 401.
+func GetRawAuthHeader(token string) http.Header {
+	h := http.Header{}
+	h.Add("Authorization", token)
+	h.Add("Content-Type", "application/json")
 	return h
 }
 
@@ -308,6 +332,54 @@ func updateChannelOpenRouterBalance(channel *model.Channel) (float64, error) {
 	return balance, nil
 }
 
+// aihubmixAccountBaseURL returns the origin to use for AIHubMix's management
+// API. The channel base URL is the *relay* endpoint and is commonly configured
+// as "https://aihubmix.com/v1", but the management API lives at the site root:
+// keeping the "/v1" suffix would request /v1/api/user/self and get a 404.
+func aihubmixAccountBaseURL(channel *model.Channel) string {
+	baseURL := channel.GetBaseURL()
+	if baseURL == "" {
+		baseURL = channeltype.ChannelBaseURLs[channeltype.AIHubMix]
+	}
+	baseURL = strings.TrimSuffix(baseURL, "/")
+	baseURL = strings.TrimSuffix(baseURL, "/v1")
+	return strings.TrimSuffix(baseURL, "/")
+}
+
+func updateChannelAIHubMixBalance(channel *model.Channel) (float64, error) {
+	cfg, err := channel.LoadConfig()
+	if err != nil {
+		return 0, err
+	}
+	// AIHubMix separates the relay credential ("sk-***") from the account
+	// management credential ("fd***"). Only the latter may read the balance;
+	// passing the relay key here yields 401.
+	if cfg.ManageKey == "" {
+		return 0, errors.New("请在渠道配置中填写 AIHubMix 系统访问令牌（Manage Key），" +
+			"可在 https://console.aihubmix.com/setting 点击「生成系统访问令牌」获取；" +
+			"用于调用模型的 sk- 开头的 API Key 无法查询余额")
+	}
+	url := fmt.Sprintf("%s/api/user/self", aihubmixAccountBaseURL(channel))
+	body, err := GetResponseBody("GET", url, channel, GetRawAuthHeader(cfg.ManageKey))
+	if err != nil {
+		return 0, err
+	}
+	response := AIHubMixUserResponse{}
+	err = json.Unmarshal(body, &response)
+	if err != nil {
+		return 0, err
+	}
+	if !response.Success {
+		if response.Message != "" {
+			return 0, errors.New(response.Message)
+		}
+		return 0, errors.New("failed to query AIHubMix account balance")
+	}
+	balance := float64(response.Data.Quota) / config.QuotaPerUnit
+	channel.UpdateBalance(balance)
+	return balance, nil
+}
+
 func updateChannelBalance(channel *model.Channel) (float64, error) {
 	baseURL := channeltype.ChannelBaseURLs[channel.Type]
 	if channel.GetBaseURL() == "" {
@@ -338,6 +410,8 @@ func updateChannelBalance(channel *model.Channel) (float64, error) {
 		return updateChannelDeepSeekBalance(channel)
 	case channeltype.OpenRouter:
 		return updateChannelOpenRouterBalance(channel)
+	case channeltype.AIHubMix:
+		return updateChannelAIHubMixBalance(channel)
 	default:
 		return 0, errors.New("尚未实现")
 	}
