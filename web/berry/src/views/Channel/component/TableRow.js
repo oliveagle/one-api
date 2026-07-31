@@ -272,6 +272,8 @@ function renderBalance(type, balance) {
       return <span>¥{balance.toFixed(2)}</span>;
     case 44: // SiliconFlow
       return <span>¥{balance.toFixed(2)}</span>;
+    case 52: // AIHubMix
+      return <span>${balance.toFixed(2)}</span>;
     default:
       return <span>不支持</span>;
   }

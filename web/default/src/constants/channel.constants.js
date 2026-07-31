@@ -83,7 +83,6 @@ export const CHANNEL_OPTIONS = [
   { key: 42, text: 'VertexAI', value: 42, color: 'blue' },
   { key: 43, text: 'Proxy', value: 43, color: 'blue' },
   { key: 44, text: 'SiliconFlow', value: 44, color: 'blue' },
-  { key: 52, text: 'AIHubMix', value: 52, color: 'violet' },
   { key: 45, text: 'xAI', value: 45, color: 'blue' },
   { key: 46, text: 'Replicate', value: 46, color: 'blue' },
   {
@@ -97,6 +96,7 @@ export const CHANNEL_OPTIONS = [
   { key: 22, text: '知识库：FastGPT', value: 22, color: 'blue' },
   { key: 21, text: '知识库：AI Proxy', value: 21, color: 'purple' },
   { key: 20, text: 'OpenRouter', value: 20, color: 'black' },
+  { key: 52, text: 'AIHubMix', value: 52, color: 'violet' },
   { key: 2, text: '代理：API2D', value: 2, color: 'blue' },
   { key: 5, text: '代理：OpenAI-SB', value: 5, color: 'brown' },
   { key: 7, text: '代理：OhMyGPT', value: 7, color: 'purple' },

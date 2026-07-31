@@ -122,7 +122,8 @@ type OpenRouterResponse struct {
 
 // AIHubMixUserResponse models GET /api/user/self on AIHubMix.
 // AIHubMix is a one-api derivative, so `quota` / `used_quota` are integers in
-// one-api's internal quota unit and must be divided by QuotaPerUnit to get USD.
+// AIHubMix's own quota unit and must be divided by *its* quota_per_unit (not
+// this instance's config.QuotaPerUnit) to get USD. See aihubmixQuotaPerUnit.
 type AIHubMixUserResponse struct {
 	Success bool   `json:"success"`
 	Message string `json:"message"`
@@ -133,20 +134,19 @@ type AIHubMixUserResponse struct {
 	} `json:"data"`
 }
 
+// AIHubMixStatusResponse models GET /api/status on AIHubMix, which is
+// unauthenticated and exposes the quota unit used by that deployment.
+type AIHubMixStatusResponse struct {
+	Success bool `json:"success"`
+	Data    struct {
+		QuotaPerUnit float64 `json:"quota_per_unit"`
+	} `json:"data"`
+}
+
 // GetAuthHeader get auth header
 func GetAuthHeader(token string) http.Header {
 	h := http.Header{}
 	h.Add("Authorization", fmt.Sprintf("Bearer %s", token))
-	return h
-}
-
-// GetRawAuthHeader builds an Authorization header carrying the bare token,
-// without the "Bearer " prefix. AIHubMix's management API rejects the prefixed
-// form with 401.
-func GetRawAuthHeader(token string) http.Header {
-	h := http.Header{}
-	h.Add("Authorization", token)
-	h.Add("Content-Type", "application/json")
 	return h
 }
 
@@ -346,21 +346,49 @@ func aihubmixAccountBaseURL(channel *model.Channel) string {
 	return strings.TrimSuffix(baseURL, "/")
 }
 
+// aihubmixDefaultQuotaPerUnit is the quota unit AIHubMix reported at the time
+// of writing ($1 == 500000 units). Used only if /api/status is unreachable.
+const aihubmixDefaultQuotaPerUnit = 500000.0
+
+// aihubmixQuotaPerUnit asks the upstream how many quota units make up one USD.
+// This must NOT be read from config.QuotaPerUnit: that option belongs to *this*
+// one-api instance and an operator who changes it would silently corrupt the
+// reported upstream balance. /api/status is unauthenticated.
+func aihubmixQuotaPerUnit(channel *model.Channel) float64 {
+	url := fmt.Sprintf("%s/api/status", aihubmixAccountBaseURL(channel))
+	body, err := GetResponseBody("GET", url, channel, http.Header{})
+	if err != nil {
+		logger.SysError("failed to query AIHubMix quota_per_unit, falling back to default: " + err.Error())
+		return aihubmixDefaultQuotaPerUnit
+	}
+	var status AIHubMixStatusResponse
+	if err := json.Unmarshal(body, &status); err != nil || status.Data.QuotaPerUnit <= 0 {
+		logger.SysError("failed to parse AIHubMix quota_per_unit, falling back to default")
+		return aihubmixDefaultQuotaPerUnit
+	}
+	return status.Data.QuotaPerUnit
+}
+
 func updateChannelAIHubMixBalance(channel *model.Channel) (float64, error) {
 	cfg, err := channel.LoadConfig()
 	if err != nil {
 		return 0, err
 	}
 	// AIHubMix separates the relay credential ("sk-***") from the account
-	// management credential ("fd***"). Only the latter may read the balance;
-	// passing the relay key here yields 401.
-	if cfg.ManageKey == "" {
+	// management credential (a 32-char hex system access token). Only the latter
+	// may read the account; passing the relay key here yields 401 (verified
+	// against the live API).
+	token := cfg.ManageKey
+	if token == "" {
 		return 0, errors.New("请在渠道配置中填写 AIHubMix 系统访问令牌（Manage Key），" +
 			"可在 https://console.aihubmix.com/setting 点击「生成系统访问令牌」获取；" +
 			"用于调用模型的 sk- 开头的 API Key 无法查询余额")
 	}
 	url := fmt.Sprintf("%s/api/user/self", aihubmixAccountBaseURL(channel))
-	body, err := GetResponseBody("GET", url, channel, GetRawAuthHeader(cfg.ManageKey))
+	// AIHubMix accepts both the bare token and the "Bearer "-prefixed form (it
+	// inherits one-api's ValidateAccessToken, which strips the prefix), so the
+	// standard helper is fine here.
+	body, err := GetResponseBody("GET", url, channel, GetAuthHeader(token))
 	if err != nil {
 		return 0, err
 	}
@@ -375,7 +403,7 @@ func updateChannelAIHubMixBalance(channel *model.Channel) (float64, error) {
 		}
 		return 0, errors.New("failed to query AIHubMix account balance")
 	}
-	balance := float64(response.Data.Quota) / config.QuotaPerUnit
+	balance := float64(response.Data.Quota) / aihubmixQuotaPerUnit(channel)
 	channel.UpdateBalance(balance)
 	return balance, nil
 }

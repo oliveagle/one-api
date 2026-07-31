@@ -221,6 +221,12 @@ export const CHANNEL_OPTIONS = {
     value: 20,
     color: 'success'
   },
+  52: {
+    key: 52,
+    text: 'AIHubMix',
+    value: 52,
+    color: 'success'
+  },
   2: {
     key: 2,
     text: '代理：API2D',
