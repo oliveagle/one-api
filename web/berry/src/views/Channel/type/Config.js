@@ -228,6 +228,19 @@ const typeConfig = {
   45: {
     modelGroup: 'xai'
   },
+  52: {
+    inputLabel: {
+      config: {
+        manage_key: '系统访问令牌（Manage Key，用于查询余额）'
+      }
+    },
+    prompt: {
+      config: {
+        manage_key:
+          '在 https://console.aihubmix.com/setting 点击「生成系统访问令牌」获取；留空则无法查询余额，但不影响模型调用'
+      }
+    }
+  },
 };
 
 export { defaultConfig, typeConfig };

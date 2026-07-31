@@ -20,6 +20,14 @@ func GetFullRequestURL(baseURL string, requestURL string, channelType int) strin
 	if channelType == channeltype.OpenAICompatible {
 		return fmt.Sprintf("%s%s", strings.TrimSuffix(baseURL, "/"), strings.TrimPrefix(requestURL, "/v1"))
 	}
+	if channelType == channeltype.AIHubMix {
+		// AIHubMix's relay endpoint is documented as "https://aihubmix.com/v1",
+		// but requestURL already carries the "/v1" prefix. Concatenating both
+		// yields /v1/v1/chat/completions -> 404. Normalise so that either form
+		// of base_url works.
+		trimmed := strings.TrimSuffix(strings.TrimSuffix(baseURL, "/"), "/v1")
+		return fmt.Sprintf("%s%s", strings.TrimSuffix(trimmed, "/"), requestURL)
+	}
 	fullRequestURL := fmt.Sprintf("%s%s", baseURL, requestURL)
 
 	if strings.HasPrefix(baseURL, "https://gateway.ai.cloudflare.com") {
