@@ -599,7 +599,7 @@ const EditChannel = () => {
               <Form.Input
                 label='系统访问令牌（Manage Key，用于查询余额）'
                 name='manage_key'
-                placeholder='以 fd 开头，在 https://console.aihubmix.com/setting 点击「生成系统访问令牌」获取；留空则无法查询余额，但不影响模型调用'
+                placeholder='在 https://console.aihubmix.com/setting 点击「生成系统访问令牌」获取；留空则无法查询余额，但不影响模型调用'
                 onChange={handleConfigChange}
                 value={config.manage_key}
                 autoComplete='new-password'

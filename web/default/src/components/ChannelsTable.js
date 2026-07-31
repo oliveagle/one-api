@@ -66,6 +66,8 @@ function renderBalance(type, balance, t) {
       return <span>¥{balance.toFixed(2)}</span>;
     case 44: // SiliconFlow
       return <span>¥{balance.toFixed(2)}</span>;
+    case 52: // AIHubMix
+      return <span>${balance.toFixed(2)}</span>;
     default:
       return <span>{t('channel.table.balance_not_supported')}</span>;
   }
