@@ -135,30 +135,23 @@ func InitDB() {
 }
 
 func migrateDB() error {
-	var err error
-	if err = DB.AutoMigrate(&Channel{}); err != nil {
-		return err
+	if DB == nil {
+		return fmt.Errorf("migrateDB: DB is not initialised")
 	}
-	if err = DB.AutoMigrate(&Token{}); err != nil {
-		return err
+	return AutoMigrateAll(DB)
+}
+
+// AutoMigrateAll applies every model schema to the supplied *gorm.DB.
+// It is exported so test helpers (e.g. common/testutil) can spin up an
+// in-memory SQLite without going through the full InitDB() path.
+func AutoMigrateAll(db *gorm.DB) error {
+	if db == nil {
+		return fmt.Errorf("AutoMigrateAll: db is nil")
 	}
-	if err = DB.AutoMigrate(&User{}); err != nil {
-		return err
-	}
-	if err = DB.AutoMigrate(&Option{}); err != nil {
-		return err
-	}
-	if err = DB.AutoMigrate(&Redemption{}); err != nil {
-		return err
-	}
-	if err = DB.AutoMigrate(&Ability{}); err != nil {
-		return err
-	}
-	if err = DB.AutoMigrate(&Log{}); err != nil {
-		return err
-	}
-	if err = DB.AutoMigrate(&Channel{}); err != nil {
-		return err
+	for _, m := range []interface{}{&Channel{}, &Token{}, &User{}, &Option{}, &Redemption{}, &Ability{}, &Log{}} {
+		if err := db.AutoMigrate(m); err != nil {
+			return err
+		}
 	}
 	return nil
 }
