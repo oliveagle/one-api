@@ -13,3 +13,7 @@ cmd.md
 /one-api
 temp
 .DS_Store
+
+# Agent / task tracker state (managed out of band by bitx-loop)
+.beads/
+.bitx/
