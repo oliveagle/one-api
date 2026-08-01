@@ -170,7 +170,48 @@ chat 流式路径用 `common/render.StringData`,它只发 `data:` 帧。
 
 ## 7. 后续任务 (Follow-up)
 
-- [ ] 实现 `relay/controller/responses.go` + 路由 + relaymode
-- [ ] 单测:路径映射、usage 字段映射、input token 估算
+- [x] 实现 `relay/controller/responses.go` + 路由 + relaymode
+- [x] 单测:路径映射、usage 字段映射、input token 估算
 - [x] 实机验证:非流式 + 流式,确认计费额度正确扣减(本地 mock upstream,见下)
-- [ ] 文档:README 标注"Responses API 仅对原生支持的上游有效"
+- [x] 文档:README 标注"Responses API 仅对原生支持的上游有效"
+- [x] 扩展 CRUD 端点支持 (2026-08-01 完成)
+
+## 8. CRUD 端点扩展 (2026-08-01)
+
+在初始 `POST /v1/responses` 实现完成后,进一步添加了 Responses API 的完整 CRUD 支持:
+
+### 8.1 新增端点
+
+| 端点 | 方法 | 说明 | 计费 |
+|------|------|------|------|
+| `/v1/responses` | POST | 创建 response | ✅ 计费 |
+| `/v1/responses/:response_id` | GET | 获取 response | ❌ 不计费 |
+| `/v1/responses/:response_id` | DELETE | 删除 response | ❌ 不计费 |
+| `/v1/responses/:response_id/cancel` | POST | 取消进行中的 response | ❌ 不计费 |
+| `/v1/responses/:response_id/input_items` | GET | 列出 input items | ❌ 不计费 |
+
+### 8.2 实现方式
+
+采用**单处理器方法分支**模式:
+
+- `RelayResponsesHelper` 作为分发器,根据 HTTP 方法和路径分发到不同的处理器
+- `relayResponsesCreate` 处理 POST /responses (带计费)
+- `relayResponsesPassthrough` 处理所有 CRUD 操作 (无计费)
+- `forwardResponse` 通用函数负责复制上游响应
+
+### 8.3 设计决策
+
+1. **CRUD 操作不计费**: GET/DELETE/cancel/input_items 是检索和管理操作,不消耗 tokens
+2. **复用现有基础设施**: 所有端点共享相同的 relay mode、adaptor、middleware 链
+3. **路径参数传递**: Gin 的 `:response_id` 自动传递到 `meta.RequestURLPath`,adaptor 正确转发到上游
+
+### 8.4 代码变更
+
+| 文件 | 变更 |
+|------|------|
+| `router/relay.go` | 添加 4 个新路由 |
+| `middleware/distributor.go` | 添加注释说明 GET/DELETE 无 body 的处理 |
+| `relay/controller/responses.go` | 重构为分发器 + 5 个处理器 |
+| `router/relay_test.go` | 添加新路由测试 |
+| `relay/controller/responses_test.go` | 添加方法分发和路径模式测试 |
+| `README.md` | 添加 Responses API 功能说明 |

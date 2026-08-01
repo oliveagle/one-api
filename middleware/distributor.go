@@ -43,6 +43,10 @@ func Distribute() func(c *gin.Context) {
 			}
 		} else {
 			requestModel = c.GetString(ctxkey.RequestModel)
+			// For GET/DELETE requests (e.g., Responses API CRUD endpoints),
+			// there's no request body, so requestModel may be empty.
+			// In this case, we still try to find a channel - it will be up to
+			// the upstream to handle the request or return an error.
 			var err error
 			channel, err = model.CacheGetRandomSatisfiedChannel(userGroup, requestModel, false)
 			if err != nil {
