@@ -162,14 +162,13 @@ func GetResponseBody(method, url string, channel *model.Channel, headers http.He
 	if err != nil {
 		return nil, err
 	}
+	// Always close the body, including on the non-200 path: returning early
+	// without closing leaks the connection.
+	defer res.Body.Close()
 	if res.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("status code: %d", res.StatusCode)
 	}
 	body, err := io.ReadAll(res.Body)
-	if err != nil {
-		return nil, err
-	}
-	err = res.Body.Close()
 	if err != nil {
 		return nil, err
 	}
@@ -354,16 +353,42 @@ const aihubmixDefaultQuotaPerUnit = 500000.0
 // This must NOT be read from config.QuotaPerUnit: that option belongs to *this*
 // one-api instance and an operator who changes it would silently corrupt the
 // reported upstream balance. /api/status is unauthenticated.
+//
+// This is an auxiliary lookup, so it uses the 5s ImpatientHTTPClient rather than
+// HTTPClient: RELAY_TIMEOUT defaults to 0 (no timeout), and a hung /api/status
+// must not block the balance refresh indefinitely. On any failure we fall back
+// to the observed constant instead of failing the whole refresh.
 func aihubmixQuotaPerUnit(channel *model.Channel) float64 {
 	url := fmt.Sprintf("%s/api/status", aihubmixAccountBaseURL(channel))
-	body, err := GetResponseBody("GET", url, channel, http.Header{})
+	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		logger.SysError("failed to query AIHubMix quota_per_unit, falling back to default: " + err.Error())
+		logger.SysError("failed to build AIHubMix status request, using default quota_per_unit: " + err.Error())
+		return aihubmixDefaultQuotaPerUnit
+	}
+	httpClient := client.ImpatientHTTPClient
+	if httpClient == nil {
+		// client.Init() is called from main before serving, but do not depend on
+		// global initialisation order for a fallback-capable lookup.
+		httpClient = &http.Client{Timeout: 5 * time.Second}
+	}
+	res, err := httpClient.Do(req)
+	if err != nil {
+		logger.SysError("failed to query AIHubMix quota_per_unit, using default: " + err.Error())
+		return aihubmixDefaultQuotaPerUnit
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		logger.SysError(fmt.Sprintf("AIHubMix status returned %d, using default quota_per_unit", res.StatusCode))
+		return aihubmixDefaultQuotaPerUnit
+	}
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		logger.SysError("failed to read AIHubMix status body, using default quota_per_unit: " + err.Error())
 		return aihubmixDefaultQuotaPerUnit
 	}
 	var status AIHubMixStatusResponse
 	if err := json.Unmarshal(body, &status); err != nil || status.Data.QuotaPerUnit <= 0 {
-		logger.SysError("failed to parse AIHubMix quota_per_unit, falling back to default")
+		logger.SysError("failed to parse AIHubMix quota_per_unit, using default")
 		return aihubmixDefaultQuotaPerUnit
 	}
 	return status.Data.QuotaPerUnit
