@@ -27,6 +27,10 @@ func SetRelayRouter(router *gin.Engine) {
 		// implement it natively can serve this route; see
 		// docs/adr/0001-openai-responses-api-passthrough.md
 		relayV1Router.POST("/responses", controller.Relay)
+		relayV1Router.GET("/responses/:response_id", controller.Relay)
+		relayV1Router.DELETE("/responses/:response_id", controller.Relay)
+		relayV1Router.POST("/responses/:response_id/cancel", controller.Relay)
+		relayV1Router.GET("/responses/:response_id/input_items", controller.Relay)
 		relayV1Router.POST("/edits", controller.Relay)
 		relayV1Router.POST("/images/generations", controller.Relay)
 		relayV1Router.POST("/images/edits", controller.RelayNotImplemented)

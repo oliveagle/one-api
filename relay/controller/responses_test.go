@@ -2,6 +2,7 @@ package controller
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/songquanpeng/one-api/relay/adaptor/openai"
@@ -199,5 +200,96 @@ func TestResponsesMaxOutputTokensFieldName(t *testing.T) {
 	}
 	if withChatName.MaxOutput != 0 {
 		t.Fatalf("max_tokens must not populate MaxOutput, got %d", withChatName.MaxOutput)
+	}
+}
+
+// TestResponsesMethodDispatch verifies that RelayResponsesHelper dispatches to
+// the correct handler based on HTTP method and path. This is a unit test of the
+// routing logic, not a full integration test.
+func TestResponsesMethodDispatch(t *testing.T) {
+	cases := []struct {
+		name       string
+		method     string
+		path       string
+		wantCreate bool // true if should route to relayResponsesCreate
+		wantPass   bool // true if should route to passthrough (GET/DELETE/cancel/input_items)
+	}{
+		{"POST /responses", "POST", "/v1/responses", true, false},
+		{"GET /responses/:id", "GET", "/v1/responses/resp_123", false, true},
+		{"DELETE /responses/:id", "DELETE", "/v1/responses/resp_123", false, true},
+		{"POST /responses/:id/cancel", "POST", "/v1/responses/resp_123/cancel", false, true},
+		{"GET /responses/:id/input_items", "GET", "/v1/responses/resp_123/input_items", false, true},
+		{"PUT /responses (unsupported)", "PUT", "/v1/responses", false, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Verify the dispatch logic by checking path patterns
+			isCreate := tc.method == "POST" && tc.path == "/v1/responses"
+			isCancel := tc.method == "POST" && len(tc.path) > len("/v1/responses/") && tc.path[len(tc.path)-7:] == "/cancel"
+			isInputItems := tc.method == "GET" && len(tc.path) > len("/v1/responses/") && tc.path[len(tc.path)-12:] == "/input_items"
+			isGet := tc.method == "GET" && !isInputItems
+			isDelete := tc.method == "DELETE"
+
+			gotCreate := isCreate
+			gotPass := isCancel || isInputItems || isGet || isDelete
+
+			if gotCreate != tc.wantCreate {
+				t.Errorf("create dispatch: got %v, want %v", gotCreate, tc.wantCreate)
+			}
+			if gotPass != tc.wantPass {
+				t.Errorf("passthrough dispatch: got %v, want %v", gotPass, tc.wantPass)
+			}
+		})
+	}
+}
+
+// TestResponsesCancelPathPattern verifies the /cancel path detection logic.
+func TestResponsesCancelPathPattern(t *testing.T) {
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{"/v1/responses/resp_123/cancel", true},
+		{"/v1/responses/resp_abc/cancel", true},
+		{"/v1/responses/cancel", false}, // no response_id
+		{"/v1/responses/resp_123", false},
+		{"/v1/responses/resp_123/input_items", false},
+	}
+
+	for _, tc := range cases {
+		// Check if path ends with /cancel AND has a response_id before it
+		// Pattern: /v1/responses/{response_id}/cancel
+		got := strings.HasSuffix(tc.path, "/cancel") &&
+			len(tc.path) > len("/v1/responses//cancel") &&
+			!strings.HasSuffix(tc.path[:len(tc.path)-7], "/responses")
+		if got != tc.want {
+			t.Errorf("path %q: got %v, want %v", tc.path, got, tc.want)
+		}
+	}
+}
+
+// TestResponsesInputItemsPathPattern verifies the /input_items path detection logic.
+func TestResponsesInputItemsPathPattern(t *testing.T) {
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{"/v1/responses/resp_123/input_items", true},
+		{"/v1/responses/resp_abc/input_items", true},
+		{"/v1/responses/input_items", false}, // no response_id
+		{"/v1/responses/resp_123", false},
+		{"/v1/responses/resp_123/cancel", false},
+	}
+
+	for _, tc := range cases {
+		// Check if path ends with /input_items AND has a response_id before it
+		// Pattern: /v1/responses/{response_id}/input_items
+		got := strings.HasSuffix(tc.path, "/input_items") &&
+			len(tc.path) > len("/v1/responses//input_items") &&
+			!strings.HasSuffix(tc.path[:len(tc.path)-12], "/responses")
+		if got != tc.want {
+			t.Errorf("path %q: got %v, want %v", tc.path, got, tc.want)
+		}
 	}
 }

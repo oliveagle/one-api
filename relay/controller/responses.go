@@ -107,10 +107,45 @@ func usageFromSSELine(line string) *ResponsesUsage {
 	return nil
 }
 
-// RelayResponsesHelper relays POST /v1/responses as a passthrough. The request
+// RelayResponsesHelper dispatches Responses API requests to the appropriate
+// handler based on HTTP method and path. POST /v1/responses creates a new
+// response (with billing), while GET/DELETE/cancel/input_items are passthrough
+// operations without billing.
+func RelayResponsesHelper(c *gin.Context) *relaymodel.ErrorWithStatusCode {
+	path := c.Request.URL.Path
+
+	// POST /responses/:id/cancel - Cancel an in-progress response
+	if c.Request.Method == http.MethodPost && strings.HasSuffix(path, "/cancel") {
+		return relayResponsesCancel(c)
+	}
+
+	// GET /responses/:id/input_items - List input items of a response
+	if c.Request.Method == http.MethodGet && strings.HasSuffix(path, "/input_items") {
+		return relayResponsesInputItems(c)
+	}
+
+	// POST /responses - Create a new response (with billing)
+	if c.Request.Method == http.MethodPost {
+		return relayResponsesCreate(c)
+	}
+
+	// GET /responses/:id - Retrieve a response
+	if c.Request.Method == http.MethodGet {
+		return relayResponsesGet(c)
+	}
+
+	// DELETE /responses/:id - Delete a response
+	if c.Request.Method == http.MethodDelete {
+		return relayResponsesDelete(c)
+	}
+
+	return openai.ErrorWrapper(fmt.Errorf("unsupported method for Responses API"), "unsupported_method", http.StatusMethodNotAllowed)
+}
+
+// relayResponsesCreate relays POST /v1/responses as a passthrough. The request
 // body is forwarded byte-for-byte and the response is returned as-is; only
 // `model` and `stream` are inspected, for routing and billing.
-func RelayResponsesHelper(c *gin.Context) *relaymodel.ErrorWithStatusCode {
+func relayResponsesCreate(c *gin.Context) *relaymodel.ErrorWithStatusCode {
 	ctx := c.Request.Context()
 	meta := meta.GetByContext(c)
 
@@ -181,6 +216,94 @@ func RelayResponsesHelper(c *gin.Context) *relaymodel.ErrorWithStatusCode {
 	}
 
 	go postConsumeQuota(ctx, usage, meta, billingRequest, ratio, preConsumedQuota, modelRatio, groupRatio, false)
+	return nil
+}
+
+// relayResponsesGet relays GET /v1/responses/:response_id as a passthrough.
+// No billing is applied since this is a retrieval operation.
+func relayResponsesGet(c *gin.Context) *relaymodel.ErrorWithStatusCode {
+	return relayResponsesPassthrough(c)
+}
+
+// relayResponsesDelete relays DELETE /v1/responses/:response_id as a passthrough.
+// No billing is applied since this is a deletion operation.
+func relayResponsesDelete(c *gin.Context) *relaymodel.ErrorWithStatusCode {
+	return relayResponsesPassthrough(c)
+}
+
+// relayResponsesCancel relays POST /v1/responses/:response_id/cancel as a passthrough.
+// No billing is applied since this cancels an in-progress response.
+func relayResponsesCancel(c *gin.Context) *relaymodel.ErrorWithStatusCode {
+	return relayResponsesPassthrough(c)
+}
+
+// relayResponsesInputItems relays GET /v1/responses/:response_id/input_items as a passthrough.
+// No billing is applied since this is a retrieval operation.
+func relayResponsesInputItems(c *gin.Context) *relaymodel.ErrorWithStatusCode {
+	return relayResponsesPassthrough(c)
+}
+
+// relayResponsesPassthrough is a generic handler for Responses API CRUD operations
+// that don't require billing (GET, DELETE, cancel, input_items). It forwards the
+// request to the upstream and returns the response verbatim.
+func relayResponsesPassthrough(c *gin.Context) *relaymodel.ErrorWithStatusCode {
+	ctx := c.Request.Context()
+	meta := meta.GetByContext(c)
+
+	adaptor := relay.GetAdaptor(meta.APIType)
+	if adaptor == nil {
+		return openai.ErrorWrapper(fmt.Errorf("invalid api type: %d", meta.APIType), "invalid_api_type", http.StatusBadRequest)
+	}
+	adaptor.Init(meta)
+
+	// GET/DELETE requests have no body; POST /cancel may have an empty body
+	var requestBody io.Reader
+	if c.Request.Method == http.MethodPost {
+		// For POST /cancel, forward any body as-is
+		body, err := io.ReadAll(c.Request.Body)
+		if err != nil {
+			return openai.ErrorWrapper(err, "read_request_body_failed", http.StatusInternalServerError)
+		}
+		if len(body) > 0 {
+			requestBody = bytes.NewReader(body)
+		}
+	}
+
+	resp, err := adaptor.DoRequest(c, meta, requestBody)
+	if err != nil {
+		logger.Errorf(ctx, "DoRequest failed: %s", err.Error())
+		return openai.ErrorWrapper(err, "do_request_failed", http.StatusInternalServerError)
+	}
+
+	return forwardResponse(c, resp)
+}
+
+// forwardResponse copies the upstream response to the client verbatim.
+func forwardResponse(c *gin.Context, resp *http.Response) *relaymodel.ErrorWithStatusCode {
+	if resp == nil {
+		return openai.ErrorWrapper(fmt.Errorf("nil response from upstream"), "nil_response", http.StatusInternalServerError)
+	}
+	defer resp.Body.Close()
+
+	// Copy all response headers
+	for key, values := range resp.Header {
+		for _, value := range values {
+			c.Writer.Header().Add(key, value)
+		}
+	}
+
+	// Write status code
+	c.Writer.WriteHeader(resp.StatusCode)
+
+	// Copy body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return openai.ErrorWrapper(err, "read_response_failed", http.StatusInternalServerError)
+	}
+	if _, err := c.Writer.Write(body); err != nil {
+		logger.Errorf(c.Request.Context(), "write response failed: %s", err.Error())
+	}
+
 	return nil
 }
 

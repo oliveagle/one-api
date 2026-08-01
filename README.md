@@ -112,7 +112,8 @@ _✨ 通过标准的 OpenAI API 格式访问所有的大模型，开箱即用 �
 16. 支持失败自动重试。
 17. 支持绘图接口。
 18. 支持 [Cloudflare AI Gateway](https://developers.cloudflare.com/ai-gateway/providers/openai/)，渠道设置的代理部分填写 `https://gateway.ai.cloudflare.com/v1/ACCOUNT_TAG/GATEWAY/openai` 即可。
-19. 支持丰富的**自定义**设置，
+19. 支持 [OpenAI Responses API](https://platform.openai.com/docs/api-reference/responses)，包括创建、获取、删除 response，取消进行中的 response，以及列出 input items。采用 passthrough 模式，仅支持原生兼容的上游渠道。详见 [ADR 文档](./docs/adr/0001-openai-responses-api-passthrough.md)。
+20. 支持丰富的**自定义**设置，
     1. 支持自定义系统名称，logo 以及页脚。
     2. 支持自定义首页和关于页面，可以选择使用 HTML & Markdown 代码进行自定义，或者使用一个单独的网页通过 iframe 嵌入。
 20. 支持通过系统访问令牌调用管理 API，进而**在无需二开的情况下扩展和自定义** One API 的功能，详情请参考此处 [API 文档](./docs/API.md)。
