@@ -17,6 +17,11 @@ func TestGetByPathResponses(t *testing.T) {
 		{"/v1/moderations", Moderations},
 		{"/v1/images/generations", ImagesGenerations},
 		{"/v1/audio/speech", AudioSpeech},
+		{"/v1/audio/transcriptions", AudioTranscription},
+		{"/v1/audio/translations", AudioTranslation},
+		{"/v1/edits", Edits},
+		{"/v1/embeddings", Embeddings},
+		{"/random/embeddings", Embeddings},
 		{"/v1/oneapi/proxy/1/v1/responses", Proxy},
 		{"/v1/unknown", Unknown},
 	}
