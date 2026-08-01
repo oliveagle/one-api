@@ -46,7 +46,13 @@ func DoRequest(c *gin.Context, req *http.Request) (*http.Response, error) {
 	if resp == nil {
 		return nil, errors.New("resp is nil")
 	}
-	_ = req.Body.Close()
-	_ = c.Request.Body.Close()
+	// GET-style upstream calls (and callers that hand us a request with no
+	// body) must not panic on Body.Close().
+	if req.Body != nil {
+		_ = req.Body.Close()
+	}
+	if c.Request != nil && c.Request.Body != nil {
+		_ = c.Request.Body.Close()
+	}
 	return resp, nil
 }
