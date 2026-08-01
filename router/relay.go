@@ -23,6 +23,10 @@ func SetRelayRouter(router *gin.Engine) {
 		relayV1Router.Any("/oneapi/proxy/:channelid/*target", controller.Relay)
 		relayV1Router.POST("/completions", controller.Relay)
 		relayV1Router.POST("/chat/completions", controller.Relay)
+		// OpenAI Responses API, relayed as a passthrough. Only upstreams that
+		// implement it natively can serve this route; see
+		// docs/adr/0001-openai-responses-api-passthrough.md
+		relayV1Router.POST("/responses", controller.Relay)
 		relayV1Router.POST("/edits", controller.Relay)
 		relayV1Router.POST("/images/generations", controller.Relay)
 		relayV1Router.POST("/images/edits", controller.RelayNotImplemented)

@@ -1,0 +1,156 @@
+package controller
+
+import (
+	"encoding/json"
+	"testing"
+
+	"github.com/songquanpeng/one-api/relay/adaptor/openai"
+)
+
+// The tiktoken encoders are initialised by main() in production. Tests that
+// count tokens must do it explicitly, otherwise getTokenEncoder returns a nil
+// encoder and panics.
+func init() {
+	openai.InitTokenEncoders()
+}
+
+// The Responses API names its usage fields input_tokens / output_tokens, not
+// prompt_tokens / completion_tokens. Getting this mapping wrong would bill every
+// Responses call as zero tokens.
+func TestResponsesUsageToUsage(t *testing.T) {
+	const payload = `{"input_tokens":19,"output_tokens":7,"total_tokens":26,` +
+		`"output_tokens_details":{"reasoning_tokens":0}}`
+	var upstream ResponsesUsage
+	if err := json.Unmarshal([]byte(payload), &upstream); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	usage := upstream.ToUsage()
+	if usage.PromptTokens != 19 {
+		t.Fatalf("PromptTokens = %d, want 19 (from input_tokens)", usage.PromptTokens)
+	}
+	if usage.CompletionTokens != 7 {
+		t.Fatalf("CompletionTokens = %d, want 7 (from output_tokens)", usage.CompletionTokens)
+	}
+	if usage.TotalTokens != 26 {
+		t.Fatalf("TotalTokens = %d, want 26", usage.TotalTokens)
+	}
+}
+
+// A chat-shaped usage block must not be mistaken for a Responses one: the field
+// names do not overlap, so it has to decode to zeros rather than bogus numbers.
+func TestResponsesUsageIgnoresChatFieldNames(t *testing.T) {
+	const payload = `{"prompt_tokens":100,"completion_tokens":50,"total_tokens":150}`
+	var upstream ResponsesUsage
+	if err := json.Unmarshal([]byte(payload), &upstream); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if upstream.InputTokens != 0 || upstream.OutputTokens != 0 {
+		t.Fatalf("chat field names leaked into Responses usage: %+v", upstream)
+	}
+}
+
+// The real non-streaming reply shape, captured from the live AIHubMix API.
+func TestResponsesEnvelopeParsesLiveShape(t *testing.T) {
+	const payload = `{"id":"0217853925306516a94f2aa4e665d19f141e23e2699c8c2a100be",` +
+		`"object":"response","created_at":1785392530,"model":"coding_large",` +
+		`"status":"completed","output":[{"type":"message","role":"assistant",` +
+		`"content":[{"type":"output_text","text":"Hi"}]}],` +
+		`"usage":{"input_tokens":19,"output_tokens":7,"total_tokens":26}}`
+	var envelope responsesEnvelope
+	if err := json.Unmarshal([]byte(payload), &envelope); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if envelope.Usage == nil {
+		t.Fatal("usage not decoded from the live response shape")
+	}
+	if envelope.Usage.TotalTokens != 26 {
+		t.Fatalf("TotalTokens = %d, want 26", envelope.Usage.TotalTokens)
+	}
+}
+
+func TestUsageFromSSELine(t *testing.T) {
+	cases := []struct {
+		name string
+		line string
+		want int // expected total tokens, 0 means "no usage"
+	}{
+		{"event name line", "event: response.output_text.delta", 0},
+		{"blank line", "", 0},
+		{"done sentinel", "data: [DONE]", 0},
+		{"delta without usage", `data: {"type":"response.output_text.delta","delta":"Hi"}`, 0},
+		{"not json", "data: garbage{", 0},
+		{
+			"top level usage",
+			`data: {"type":"response.completed","usage":{"input_tokens":19,"output_tokens":7,"total_tokens":26}}`,
+			26,
+		},
+		{
+			"usage nested under response",
+			`data: {"type":"response.completed","response":{"usage":{"input_tokens":5,"output_tokens":3,"total_tokens":8}}}`,
+			8,
+		},
+		{
+			"zero usage is ignored so a later real one wins",
+			`data: {"usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0}}`,
+			0,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := usageFromSSELine(tc.line)
+			if tc.want == 0 {
+				if got != nil {
+					t.Fatalf("expected no usage, got %+v", got)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatal("expected usage, got nil")
+			}
+			if got.TotalTokens != tc.want {
+				t.Fatalf("TotalTokens = %d, want %d", got.TotalTokens, tc.want)
+			}
+		})
+	}
+}
+
+// Pre-consumption needs a non-zero estimate for both input shapes, otherwise a
+// caller could exceed their quota before the upstream reports real usage.
+func TestEstimateResponsesPromptTokens(t *testing.T) {
+	stringInput := &ResponsesRequest{Model: "gpt-4o-mini", Input: "hello world"}
+	if got := estimateResponsesPromptTokens(stringInput); got <= 0 {
+		t.Fatalf("string input estimate = %d, want > 0", got)
+	}
+
+	withInstructions := &ResponsesRequest{
+		Model:        "gpt-4o-mini",
+		Input:        "hello world",
+		Instructions: "you are a helpful assistant",
+	}
+	if estimateResponsesPromptTokens(withInstructions) <= estimateResponsesPromptTokens(stringInput) {
+		t.Fatal("instructions must add to the estimate")
+	}
+
+	empty := &ResponsesRequest{Model: "gpt-4o-mini"}
+	if got := estimateResponsesPromptTokens(empty); got != 0 {
+		t.Fatalf("empty request estimate = %d, want 0", got)
+	}
+}
+
+// Only model / stream are decoded for routing; the rest of the body is opaque
+// and must be forwarded untouched, so the struct must not swallow it.
+func TestResponsesRequestDecodesRoutingFieldsOnly(t *testing.T) {
+	const payload = `{"model":"gpt-4o-mini","stream":true,"input":"hi",` +
+		`"previous_response_id":"resp_123","store":true,` +
+		`"tools":[{"type":"web_search"}]}`
+	var request ResponsesRequest
+	if err := json.Unmarshal([]byte(payload), &request); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if request.Model != "gpt-4o-mini" {
+		t.Fatalf("Model = %q", request.Model)
+	}
+	if !request.Stream {
+		t.Fatal("Stream should be true")
+	}
+}
