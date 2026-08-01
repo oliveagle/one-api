@@ -118,9 +118,11 @@ func RelayResponsesHelper(c *gin.Context) *relaymodel.ErrorWithStatusCode {
 	if err := common.UnmarshalBodyReusable(c, &request); err != nil {
 		return openai.ErrorWrapper(err, "invalid_responses_request", http.StatusBadRequest)
 	}
-	if request.Model == "" {
-		return openai.ErrorWrapper(fmt.Errorf("model is required"), "invalid_responses_request", http.StatusBadRequest)
-	}
+	// `model` is optional in the Responses spec (only Authorization is required),
+	// but one-api needs it to pick a channel: CacheGetRandomSatisfiedChannel keys
+	// on group+model. Requests without it are already rejected upstream of this
+	// helper by middleware.Distribute with 503 "no channel available", the same
+	// way /v1/chat/completions behaves, so no check is duplicated here.
 	meta.IsStream = request.Stream
 
 	// Map the model name the same way the text path does, then rewrite it in the

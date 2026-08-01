@@ -154,3 +154,50 @@ func TestResponsesRequestDecodesRoutingFieldsOnly(t *testing.T) {
 		t.Fatal("Stream should be true")
 	}
 }
+
+// The Responses spec marks only Authorization as required; `model` is optional
+// in the body. one-api nonetheless needs it to select a channel, and that
+// rejection happens in middleware.Distribute (503, same as chat), not here.
+// This pins the decoding half: an absent model must decode to "" rather than
+// error, so the middleware stays the single place that enforces routing.
+func TestResponsesRequestModelIsOptionalWhenDecoding(t *testing.T) {
+	// Verbatim from the AIHubMix docs example, which omits "model".
+	const payload = `{"top_logprobs":10,"text":{"format":{"type":"text"},` +
+		`"verbosity":"medium"},"tools":[{"type":"function","name":"<string>",` +
+		`"parameters":{},"strict":true,"description":"<string>",` +
+		`"defer_loading":true}],"input":"<string>"}`
+	var request ResponsesRequest
+	if err := json.Unmarshal([]byte(payload), &request); err != nil {
+		t.Fatalf("a body without model must still decode: %v", err)
+	}
+	if request.Model != "" {
+		t.Fatalf("Model = %q, want empty", request.Model)
+	}
+	if request.Stream {
+		t.Fatal("Stream should default to false")
+	}
+	// The estimate must not panic on this shape either.
+	if got := estimateResponsesPromptTokens(&request); got <= 0 {
+		t.Fatalf("estimate = %d, want > 0 for a string input", got)
+	}
+}
+
+// max_output_tokens is the Responses spelling; max_tokens does not exist there.
+// It feeds getPreConsumedQuota, so reading the wrong name would under-reserve.
+func TestResponsesMaxOutputTokensFieldName(t *testing.T) {
+	var withCorrect ResponsesRequest
+	if err := json.Unmarshal([]byte(`{"model":"m","max_output_tokens":256}`), &withCorrect); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if withCorrect.MaxOutput != 256 {
+		t.Fatalf("MaxOutput = %d, want 256 from max_output_tokens", withCorrect.MaxOutput)
+	}
+
+	var withChatName ResponsesRequest
+	if err := json.Unmarshal([]byte(`{"model":"m","max_tokens":256}`), &withChatName); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if withChatName.MaxOutput != 0 {
+		t.Fatalf("max_tokens must not populate MaxOutput, got %d", withChatName.MaxOutput)
+	}
+}

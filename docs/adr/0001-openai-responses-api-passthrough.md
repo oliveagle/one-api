@@ -145,6 +145,29 @@ chat 流式路径用 `common/render.StringData`,它只发 `data:` 帧。
 不是 Responses 引入的缺陷。曾尝试的 `shouldCheckModel` 补丁已回滚,
 避免留下看似生效实则无效的代码。如需统一改成 400,应另开决议覆盖所有端点。
 
+### 6.3 `model` 在 Responses spec 里是可选的 — 曾误加硬校验,已删除
+
+对照 AIHubMix API reference(`/en/api-reference/openai-compatible/create-a-model-response`)
+与 OpenAI migrate-to-responses 指南复核后发现:请求体里**只有 `Authorization` 标注 required**,
+`model` 没有 required 标记(对比响应体的 `id` / `object` 明确写 required)。
+文档给出的 curl 示例本身就**不含 `model`**。
+
+原实现在 `model == ""` 时直接返回 400 `model is required`,与文档契约冲突。
+但实测发现该分支是**不可达的死代码**:`middleware.Distribute` 先于本 helper 执行,
+`CacheGetRandomSatisfiedChannel(group, model)` 以 group+model 为键,
+缺 model 时直接返回 503 `无可用渠道`。`/v1/chat/completions` 行为完全一致。
+
+结论:one-api **架构上必须有 model 才能选渠道**,这是网关的固有约束而非协议要求。
+已删除该 400 校验(避免既违反文档、又永不生效),把拒绝职责留在 middleware 单点,
+并加测试锁定"缺 model 时仍能正常反序列化"(用文档原样示例做 fixture)。
+
+### 6.4 文档复核确认的其他两点
+
+- `max_output_tokens` 是 Responses 的正确拼写,Responses 无 `max_tokens`
+  (文档全文 0 次匹配)。实现读取前者,已加测试确保 `max_tokens` 不会误populate。
+- `store` **默认 true**,`previous_response_id` 由服务端串联上下文。
+  这反向印证了透传决策:B 方案(转换层)会把这两个语义静默丢弃。
+
 ## 7. 后续任务 (Follow-up)
 
 - [ ] 实现 `relay/controller/responses.go` + 路由 + relaymode
