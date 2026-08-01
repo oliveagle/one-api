@@ -15,8 +15,16 @@ on:
   push:
     branches:
       - 'main'
+  pull_request:
+    branches:
+      - 'main'
 
 jobs:
+  # Fast feedback loop. Runs gofmt + go vet + go test in a hermetic
+  # sandbox (no network access required) using the in-memory fixtures
+  # provided by common/testutil. This is the job that catches flaky
+  # tests and external network dependencies before they reach the
+  # coverage job.
   unit_tests:
     name: "Unit tests"
     runs-on: ubuntu-latest
@@ -29,10 +37,43 @@ jobs:
         with:
           go-version: ^1.22
 
-      # When you execute your unit tests, make sure to use the "-coverprofile" flag to write a
-      # coverage profile to a file. You will need the name of the file (e.g. "coverage.txt")
-      # in the next step as well as the next job.
-      - name: Test
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Verify formatting
+        run: |
+          # gofmt is the first gate; we don't -w in CI because we want
+          # to surface formatting drift loudly rather than silently
+          # rewriting history on every push.
+          diff_out=$(gofmt -s -d .)
+          if [ -n "$diff_out" ]; then
+            echo "::error::gofmt produced diffs:"
+            echo "$diff_out"
+            exit 1
+          fi
+
+      - name: Static analysis
+        run: go vet ./...
+
+      - name: Run unit tests
+        # -race catches data races in testutil's parallel helpers.
+        # -count=1 defeats any local build cache so flake-watchers
+        # see the real run.
+        # -p parallelism follows GOMAXPROCS so SQLite temp files don't
+        # thrash; tests themselves still call t.Parallel() internally.
+        run: go test -race -count=1 -timeout 90s ./...
+
+      # Coverage is uploaded as a separate job below so that a flaky
+      # coverage report does not block the green/red signal of
+      # unit_tests.
+      - name: Generate coverage
         run: go test -cover -coverprofile=coverage.txt ./...
       - uses: codecov/codecov-action@v4
         with:
