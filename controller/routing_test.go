@@ -9,11 +9,26 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/songquanpeng/one-api/model"
 	"github.com/songquanpeng/one-api/relay/routing"
 )
 
 func TestGetRoutingStatus(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	setupMockDB(t)
+
+	// Seed a channel so the controller can look up its name and enrich the
+	// ChannelState / channel_names.
+	if err := model.DB.Create(&model.Channel{
+		Id:           10,
+		Name:         "test-upstream-a",
+		Type:         1,
+		Status:       model.ChannelStatusEnabled,
+		ResponseTime: 800,
+		Balance:      5.0,
+	}).Error; err != nil {
+		t.Fatalf("seed channel: %v", err)
+	}
 
 	// Seed the process-wide router store.
 	store := routing.DefaultRouter().Store()
@@ -35,10 +50,11 @@ func TestGetRoutingStatus(t *testing.T) {
 	var resp struct {
 		Success bool `json:"success"`
 		Data    struct {
-			Enabled    bool                    `json:"enabled"`
-			SessionTTL int                     `json:"session_ttl_seconds"`
-			Sessions   []routing.SessionRecord `json:"sessions"`
-			Channels   []routing.ChannelState  `json:"channels"`
+			Enabled      bool                    `json:"enabled"`
+			SessionTTL   int                     `json:"session_ttl_seconds"`
+			ChannelNames map[int]string          `json:"channel_names"`
+			Sessions     []routing.SessionRecord `json:"sessions"`
+			Channels     []routing.ChannelState  `json:"channels"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
@@ -69,7 +85,77 @@ func TestGetRoutingStatus(t *testing.T) {
 	if chByID[10] != 1 || chByID[20] != 1 {
 		t.Fatalf("unexpected channel session counts: %v", chByID)
 	}
+	// Channel 10's name must be enriched from the DB.
+	if resp.Data.ChannelNames[10] != "test-upstream-a" {
+		t.Fatalf("channel 10 name not enriched, got %q", resp.Data.ChannelNames[10])
+	}
+	// The enriched ChannelState for 10 must carry the DB metadata.
+	var ch10 *routing.ChannelState
+	for i := range resp.Data.Channels {
+		if resp.Data.Channels[i].ChannelId == 10 {
+			ch10 = &resp.Data.Channels[i]
+			break
+		}
+	}
+	if ch10 == nil {
+		t.Fatalf("channel 10 missing from channels, got %+v", resp.Data.Channels)
+	}
+	if ch10.Name != "test-upstream-a" || ch10.Balance != 5.0 || ch10.ResponseTime != 800 || ch10.Status != model.ChannelStatusEnabled {
+		t.Fatalf("channel 10 not enriched with DB metadata: %+v", *ch10)
+	}
 }
+
+func TestGetRoutingStatusSortsByBusyness(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	setupMockDB(t)
+
+	// Channel 10: enabled, fast, healthy -> highest busyness.
+	// Channel 20: enabled but quota exhausted -> sunk.
+	// Channel 30: auto-disabled -> sunk lowest.
+	if err := model.DB.Create(&[]model.Channel{
+		{Id: 10, Name: "busy-a", Type: 1, Status: model.ChannelStatusEnabled, ResponseTime: 200, Balance: 50},
+		{Id: 20, Name: "quota-out", Type: 1, Status: model.ChannelStatusEnabled, ResponseTime: 5000, Balance: 0},
+		{Id: 30, Name: "disabled-c", Type: 1, Status: model.ChannelStatusAutoDisabled, ResponseTime: 300, Balance: 50},
+	}).Error; err != nil {
+		t.Fatalf("seed channels: %v", err)
+	}
+
+	store := routing.DefaultRouter().Store()
+	store.Clear()
+	// 3 sessions on channel 10, 1 session on 20, 1 on 30.
+	store.Touch(storeKey("g", "m", "s1"), "s1", "g", "m", 10)
+	store.Touch(storeKey("g", "m", "s2"), "s2", "g", "m", 10)
+	store.Touch(storeKey("g", "m", "s3"), "s3", "g", "m", 10)
+	store.Touch(storeKey("g", "m", "s4"), "s4", "g", "m", 20)
+	store.Touch(storeKey("g", "m", "s5"), "s5", "g", "m", 30)
+	defer store.Clear()
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/routing/status", nil)
+	GetRoutingStatus(c)
+
+	var resp struct {
+		Data struct {
+			Channels []routing.ChannelState `json:"channels"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(resp.Data.Channels) != 3 {
+		t.Fatalf("expected 3 channels, got %d", len(resp.Data.Channels))
+	}
+	// Descending busyness: channel 10 must come first, and the auto-disabled
+	// channel 30 must come last.
+	if resp.Data.Channels[0].ChannelId != 10 {
+		t.Fatalf("expected busiest channel 10 first, got %d", resp.Data.Channels[0].ChannelId)
+	}
+	if resp.Data.Channels[2].ChannelId != 30 {
+		t.Fatalf("expected disabled channel 30 last, got %d", resp.Data.Channels[2].ChannelId)
+	}
+}
+
 
 func TestDeleteRoutingSession(t *testing.T) {
 	gin.SetMode(gin.TestMode)

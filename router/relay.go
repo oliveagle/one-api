@@ -17,6 +17,20 @@ func SetRelayRouter(router *gin.Engine) {
 		modelsRouter.GET("", controller.ListModels)
 		modelsRouter.GET("/:model", controller.RetrieveModel)
 	}
+	// Client-facing routing control. Token-authenticated but deliberately NOT
+	// behind Distribute(): these calls do not relay anywhere, they inspect and
+	// change which upstream node the caller's own session is pinned to.
+	// Registered before the relay group so Distribute() does not intercept them.
+	routingCtlRouter := router.Group("/v1/oneapi/routing")
+	routingCtlRouter.Use(middleware.TokenAuth())
+	{
+		routingCtlRouter.GET("/nodes", controller.GetClientRoutingNodes)
+		routingCtlRouter.POST("/nodes", controller.GetClientRoutingNodes)
+		routingCtlRouter.POST("/pin", controller.PinClientRoutingNode)
+		routingCtlRouter.POST("/cycle", controller.CycleClientRoutingNode)
+		routingCtlRouter.POST("/unpin", controller.UnpinClientRoutingNode)
+	}
+
 	relayV1Router := router.Group("/v1")
 	relayV1Router.Use(middleware.RelayPanicRecover(), middleware.TokenAuth(), middleware.Distribute())
 	{

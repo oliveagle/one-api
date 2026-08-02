@@ -22,6 +22,13 @@ var relayExpectedRoutes = []struct {
 	{"GET", "/v1/models"},
 	{"GET", "/v1/models/:model"},
 
+	// Client-facing sticky-routing control (token auth, not relayed).
+	{"GET", "/v1/oneapi/routing/nodes"},
+	{"POST", "/v1/oneapi/routing/nodes"},
+	{"POST", "/v1/oneapi/routing/pin"},
+	{"POST", "/v1/oneapi/routing/cycle"},
+	{"POST", "/v1/oneapi/routing/unpin"},
+
 	{"POST", "/v1/oneapi/proxy/:channelid/*target"},
 	{"POST", "/v1/completions"},
 	{"POST", "/v1/chat/completions"},

@@ -859,6 +859,18 @@
     "unbind_success": "Session unbound",
     "clear_success": "All routing sessions cleared",
     "no_sessions": "No sessions",
-    "no_channels": "No active channels"
+    "no_channels": "No active channels",
+    "response_time": "Response",
+    "rate_limited": "Rate Limited",
+    "quota": "Quota",
+    "status_label": "Status",
+    "busyness": "Load",
+    "healthy": "Healthy",
+    "unknown": "Unknown",
+    "quota_exhausted": "Exhausted",
+    "manual_disabled": "Manual Off",
+    "auto_disabled": "Auto Off",
+    "failure_threshold": "Fail Threshold",
+    "consecutive_failures": "Consec. Fails"
   }
 }

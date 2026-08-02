@@ -9,22 +9,33 @@ import (
 // SessionRecord is the observable state of one sticky-routed session, exposed
 // to the routing management page via Snapshot().
 type SessionRecord struct {
-	SessionKey string    `json:"session_key"`
-	Group      string    `json:"group"`
-	Model      string    `json:"model"`
-	ChannelId  int       `json:"channel_id"`
-	Requests   int64     `json:"requests"`
-	Failures   int64     `json:"failures"`
-	FirstSeen  time.Time `json:"first_seen"`
-	LastSeen   time.Time `json:"last_seen"`
+	SessionKey         string    `json:"session_key"`
+	Group              string    `json:"group"`
+	Model              string    `json:"model"`
+	ChannelId          int       `json:"channel_id"`
+	Requests           int64     `json:"requests"`
+	Failures           int64     `json:"failures"`
+	ConsecutiveFailures int64    `json:"consecutive_failures"` // reset to 0 on each success
+	FirstSeen          time.Time `json:"first_seen"`
+	LastSeen           time.Time `json:"last_seen"`
 }
 
 // ChannelState is the aggregated observable state of one upstream node
 // (channel) across all sessions, exposed to the routing management page.
+// Display fields (Name, ResponseTime, Balance, Status, Priority, Requests)
+// are populated by the controller from the DB after building the snapshot.
 type ChannelState struct {
 	ChannelId    int       `json:"channel_id"`
+	Name         string    `json:"name"`
 	Sessions     int       `json:"sessions"`
+	Requests     int64     `json:"requests"`     // cumulative requests across sessions on this channel
+	Failures     int64     `json:"failures"`     // cumulative failures
+	ResponseTime int       `json:"response_time"` // ms, from DB
+	Balance      float64   `json:"balance"`      // USD, from DB
+	Status       int       `json:"status"`       // 1=enabled,2=manual-disabled,3=auto-disabled
+	Priority     int64     `json:"priority"`     // configured priority weight
 	CoolingUntil time.Time `json:"cooling_until"`
+	Busyness     float64   `json:"busyness"`     // composite sort score
 }
 
 // Store holds the in-memory session -> channel sticky bindings, a registry of
@@ -65,6 +76,18 @@ func (s *Store) Get(key string) (int, bool) {
 	return rec.ChannelId, true
 }
 
+// GetConsecutiveFailures returns the number of consecutive failures for the
+// session bound to key. Used by the Router to decide whether to keep the
+// binding or migrate the session to a different channel.
+func (s *Store) GetConsecutiveFailures(key string) int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if rec, ok := s.bindings[key]; ok {
+		return rec.ConsecutiveFailures
+	}
+	return 0
+}
+
 // Touch records a routed request for a session, (re)pinning the session to
 // channelId. It updates the session record and the per-channel session counts.
 func (s *Store) Touch(key, sessionKey, group, model string, channelId int) {
@@ -90,6 +113,7 @@ func (s *Store) Touch(key, sessionKey, group, model string, channelId int) {
 		s.incChannelLocked(channelId)
 	}
 	rec.Requests++
+	rec.ConsecutiveFailures = 0 // success resets the streak
 	rec.LastSeen = now
 	s.pruneLocked(now)
 }
@@ -104,6 +128,7 @@ func (s *Store) Fail(key string, channelId int, until time.Time) {
 	}
 	if rec, ok := s.bindings[key]; ok {
 		rec.Failures++
+		rec.ConsecutiveFailures++
 		rec.LastSeen = time.Now()
 	}
 }
@@ -173,12 +198,23 @@ func (s *Store) Snapshot() []SessionRecord {
 	return records
 }
 
-// ChannelStates returns the aggregated per-channel state (active session count
-// and cooldown expiry), sorted by channel id, for the routing management page.
+// ChannelStates returns the aggregated per-channel state (active session count,
+// cumulative request/failure counts, and cooldown expiry), sorted by channel
+// id, for the routing management page. Display fields (Name, ResponseTime,
+// etc.) are populated by the controller from the DB.
 func (s *Store) ChannelStates() []ChannelState {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	now := time.Now()
+
+	// Aggregate per-channel request and failure counts from session bindings.
+	channelRequests := make(map[int]int64)
+	channelFailures := make(map[int]int64)
+	for _, rec := range s.bindings {
+		channelRequests[rec.ChannelId] += rec.Requests
+		channelFailures[rec.ChannelId] += rec.Failures
+	}
+
 	seen := make(map[int]bool, len(s.channelSessions)+len(s.cooldown))
 	ids := make([]int, 0, len(s.channelSessions)+len(s.cooldown))
 	for id := range s.channelSessions {
@@ -199,7 +235,12 @@ func (s *Store) ChannelStates() []ChannelState {
 	sort.Ints(ids)
 	states := make([]ChannelState, 0, len(ids))
 	for _, id := range ids {
-		state := ChannelState{ChannelId: id, Sessions: s.channelSessions[id]}
+		state := ChannelState{
+			ChannelId: id,
+			Sessions:  s.channelSessions[id],
+			Requests:  channelRequests[id],
+			Failures:  channelFailures[id],
+		}
 		if until, ok := s.cooldown[id]; ok && now.Before(until) {
 			state.CoolingUntil = until
 		}
@@ -250,4 +291,45 @@ func (s *Store) pruneLocked(now time.Time) {
 			s.forgetLocked(key)
 		}
 	}
+}
+
+// Rebind forcibly points key at channelId, creating the record if needed. It is
+// the explicit-user-choice counterpart to Touch: it does not increment the
+// request counter, because no request has been routed yet.
+func (s *Store) Rebind(key, sessionKey, group, model string, channelId int) {
+	now := time.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, ok := s.bindings[key]
+	if !ok {
+		s.bindings[key] = &SessionRecord{
+			SessionKey: sessionKey,
+			Group:      group,
+			Model:      model,
+			ChannelId:  channelId,
+			FirstSeen:  now,
+			LastSeen:   now,
+		}
+		s.incChannelLocked(channelId)
+		return
+	}
+	if rec.ChannelId != channelId {
+		s.decChannelLocked(rec.ChannelId)
+		rec.ChannelId = channelId
+		s.incChannelLocked(channelId)
+	}
+	rec.LastSeen = now
+}
+
+// ClearCooldown removes any cooldown recorded for channelId. Used when a user
+// explicitly selects a node, which overrides the automatic health judgement.
+func (s *Store) ClearCooldown(channelId int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.cooldown, channelId)
+}
+
+// IsCooledDownNow reports whether channelId is cooling down at the current time.
+func (s *Store) IsCooledDownNow(channelId int) bool {
+	return s.IsCooledDown(channelId, time.Now())
 }

@@ -150,6 +150,12 @@ func TestChoose_ModelAllowlist(t *testing.T) {
 }
 
 func TestChooseAlternative_ExcludesFailedAndRebinds(t *testing.T) {
+	// Default threshold (3) with zero recorded failures: ChooseAlternative must
+	// return a different channel but NOT re-pin the session — transient
+	// failover keeps the session bound to its original node.
+	config.StickyFailureThreshold = 3
+	defer func() { config.StickyFailureThreshold = 3 }()
+
 	r, _ := setupRouter(t, []*dbmodel.Channel{chanPtr(1), chanPtr(2), chanPtr(3)})
 
 	first, err := r.Choose("g", "coding_medium", "sess-1")
@@ -166,7 +172,42 @@ func TestChooseAlternative_ExcludesFailedAndRebinds(t *testing.T) {
 		t.Fatalf("ChooseAlternative returned the failed channel %d", alt.Id)
 	}
 
-	// After failover the session should be re-pinned to the alternative node.
+	// Below the failure threshold the session must stay pinned to the original
+	// channel (no re-pin).
+	next, err := r.Choose("g", "coding_medium", "sess-1")
+	if err != nil {
+		t.Fatalf("Choose err: %v", err)
+	}
+	if next.Id != first.Id {
+		t.Fatalf("session should stay on original channel below threshold: want %d got %d", first.Id, next.Id)
+	}
+}
+
+func TestChooseAlternative_RebindsWhenThresholdExceeded(t *testing.T) {
+	config.StickyFailureThreshold = 2
+	defer func() { config.StickyFailureThreshold = 3 }()
+
+	r, _ := setupRouter(t, []*dbmodel.Channel{chanPtr(1), chanPtr(2)})
+
+	first, err := r.Choose("g", "coding_medium", "sess-1")
+	if err != nil {
+		t.Fatalf("Choose err: %v", err)
+	}
+
+	// Two failures >= threshold=2.
+	r.Fail("g", "coding_medium", "sess-1", first.Id)
+	r.Fail("g", "coding_medium", "sess-1", first.Id)
+
+	exclude := map[int]bool{first.Id: true}
+	alt, err := r.ChooseAlternative("g", "coding_medium", "sess-1", exclude)
+	if err != nil {
+		t.Fatalf("ChooseAlternative err: %v", err)
+	}
+	if alt.Id == first.Id {
+		t.Fatalf("ChooseAlternative returned the failed channel %d", alt.Id)
+	}
+
+	// Threshold exceeded → session re-pinned to the alternative node.
 	next, err := r.Choose("g", "coding_medium", "sess-1")
 	if err != nil {
 		t.Fatalf("Choose err: %v", err)
@@ -270,5 +311,129 @@ func TestPickFirstPriority_PicksOnlyTopTier(t *testing.T) {
 	}
 	if len(seen) != 2 {
 		t.Fatalf("expected both top-tier channels selected, got %v", seen)
+	}
+}
+
+func TestChoose_StickyThresholdKeepsSessionPinned(t *testing.T) {
+	// With threshold=3, a single failure should NOT migrate the session.
+	config.StickyFailureThreshold = 3
+	defer func() { config.StickyFailureThreshold = 3 }()
+
+	ch1 := chanPtr(1)
+	ch2 := chanPtr(2)
+	r, _ := setupRouter(t, []*dbmodel.Channel{ch1, ch2})
+
+	// Pin session — which channel is picked is random, track it.
+	first, err := r.Choose("g", "coding_medium", "sess-1")
+	if err != nil {
+		t.Fatalf("Choose err: %v", err)
+	}
+	pinnedId := first.Id
+
+	// Fail once — consecutive_failures=1, below threshold=3.
+	r.Fail("g", "coding_medium", "sess-1", pinnedId)
+
+	// The session must still be pinned to the same channel in the store.
+	id, ok := r.store.Get(r.key("g", "coding_medium", "sess-1"))
+	if !ok || id != pinnedId {
+		t.Fatalf("session should still be pinned to channel %d, got id=%d ok=%v", pinnedId, id, ok)
+	}
+	// Consecutive failures should be 1.
+	if cf := r.store.GetConsecutiveFailures(r.key("g", "coding_medium", "sess-1")); cf != 1 {
+		t.Fatalf("expected 1 consecutive failure, got %d", cf)
+	}
+
+	// Next Choose: channel is cooled down but consecutive failures < threshold,
+	// so chooseAlternativeFrom picks a different channel for THIS request
+	// only. The session stays pinned to the original channel.
+	got, err := r.Choose("g", "coding_medium", "sess-1")
+	if err != nil {
+		t.Fatalf("Choose err: %v", err)
+	}
+	if got.Id == pinnedId {
+		// Cooldown already expired (very fast test) — acceptable.
+	} else if got.Id != 3-pinnedId {
+		t.Fatalf("expected alternative channel %d or original %d, got %d", 3-pinnedId, pinnedId, got.Id)
+	}
+
+	// Session must still be pinned to the original channel.
+	id, ok = r.store.Get(r.key("g", "coding_medium", "sess-1"))
+	if !ok || id != pinnedId {
+		t.Fatalf("session should still be pinned to channel %d, got id=%d ok=%v", pinnedId, id, ok)
+	}
+}
+
+func TestChoose_StickyThresholdMigratesAfterRepeatedFailures(t *testing.T) {
+	// With threshold=2, two consecutive failures should migrate.
+	config.StickyFailureThreshold = 2
+	defer func() { config.StickyFailureThreshold = 3 }()
+
+	ch1 := chanPtr(1)
+	ch2 := chanPtr(2)
+	r, _ := setupRouter(t, []*dbmodel.Channel{ch1, ch2})
+
+	// Pin to a channel.
+	first, _ := r.Choose("g", "coding_medium", "sess-1")
+	pinnedId := first.Id
+	altId := 3 - pinnedId // the other channel
+
+	// Fail twice — consecutive_failures=2 >= threshold=2.
+	r.Fail("g", "coding_medium", "sess-1", pinnedId)
+	r.Fail("g", "coding_medium", "sess-1", pinnedId)
+
+	// Next Choose should migrate to the other channel (binding forgotten).
+	got, err := r.Choose("g", "coding_medium", "sess-1")
+	if err != nil {
+		t.Fatalf("Choose err: %v", err)
+	}
+	if got.Id != altId {
+		t.Fatalf("expected migration to channel %d, got %d", altId, got.Id)
+	}
+
+	// Session now pinned to the other channel.
+	id, ok := r.store.Get(r.key("g", "coding_medium", "sess-1"))
+	if !ok || id != altId {
+		t.Fatalf("session should be pinned to channel %d, got id=%d ok=%v", altId, id, ok)
+	}
+}
+
+func TestChoose_SuccessResetsConsecutiveFailures(t *testing.T) {
+	config.StickyFailureThreshold = 3
+	defer func() { config.StickyFailureThreshold = 3 }()
+
+	ch1 := chanPtr(1)
+	ch2 := chanPtr(2)
+	r, _ := setupRouter(t, []*dbmodel.Channel{ch1, ch2})
+
+	// Pin to a channel (random between 1 and 2) and track it.
+	first, err := r.Choose("g", "coding_medium", "sess-1")
+	if err != nil {
+		t.Fatalf("Choose err: %v", err)
+	}
+	pinnedId := first.Id
+
+	// Fail twice on the pinned channel — consecutive_failures=2.
+	r.Fail("g", "coding_medium", "sess-1", pinnedId)
+	r.Fail("g", "coding_medium", "sess-1", pinnedId)
+
+	if cf := r.store.GetConsecutiveFailures(r.key("g", "coding_medium", "sess-1")); cf != 2 {
+		t.Fatalf("expected 2 consecutive failures, got %d", cf)
+	}
+
+	// Channel is cooled down. Since consecutive_failures=2 < threshold=3,
+	// chooseAlternativeFrom picks the other channel for this request only.
+	// Session stays pinned; consecutive failures remain 2.
+	r.Choose("g", "coding_medium", "sess-1")
+	if cf := r.store.GetConsecutiveFailures(r.key("g", "coding_medium", "sess-1")); cf != 2 {
+		t.Fatalf("expected consecutive failures still 2, got %d", cf)
+	}
+
+	// Now make the pinned channel healthy again (clear cooldown).
+	r.store.ClearCooldown(pinnedId)
+
+	// A successful Choose on the pinned channel resets consecutive failures.
+	r.Choose("g", "coding_medium", "sess-1")
+	if cf := r.store.GetConsecutiveFailures(r.key("g", "coding_medium", "sess-1")); cf != 0 {
+		t.Fatalf("expected consecutive failures reset to 0 after success, got %d", cf)
 	}
 }

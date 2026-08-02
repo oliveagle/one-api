@@ -53,6 +53,21 @@ func TestStore_TouchTracksSessionAndChannelState(t *testing.T) {
 		t.Fatalf("channel 20 should have 2 sessions, got %d", byID[20])
 	}
 
+	// Cumulative request counts across sessions must be aggregated. After the
+	// migration, channel 20 holds both sessions, so it aggregates their
+	// combined request counts (1 from sess-2 + 3 from sess-1). Channel 10 has
+	// no sessions left, so it drops out of the snapshot.
+	reqByID := map[int]int64{}
+	for _, st := range states {
+		reqByID[st.ChannelId] = st.Requests
+	}
+	if _, ok := reqByID[10]; ok {
+		t.Fatalf("channel 10 should be dropped after losing its session, got reqs=%d", reqByID[10])
+	}
+	if reqByID[20] != 5 {
+		t.Fatalf("channel 20 requests = %d, want 5", reqByID[20])
+	}
+
 	snap := s.Snapshot()
 	if len(snap) != 2 {
 		t.Fatalf("expected 2 session records, got %d", len(snap))

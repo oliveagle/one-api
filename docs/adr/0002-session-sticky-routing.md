@@ -190,7 +190,97 @@ Responses API 风格的 body 用 `instructions` + `input` 首个条目等价处�
 - **冷却中但已无会话的节点仍要展示**。故障转移后会话已迁走,原节点 `channelSessions`
   计数归零,旧实现只遍历 `channelSessions`,该节点会从页面消失,运维无法解释流量为何绕开它。
 
-## 8. 端到端验证 (Verification)
+## 8. 客户端主动更换 provider (Client-driven provider switch)
+
+sticky 路由把会话钉在一个节点上,但用户有时想**主动换一家**(这家慢/限流/想对比效果)。
+为此新增一组**面向客户端**的路由控制接口 + 一个 pi 的 `/provider` 命令。
+
+### 8.1 接口(`/v1/oneapi/routing/*`,TokenAuth)
+
+放在 `/v1` 下但**不经过 `Distribute()`** —— 它们不转发任何请求,只查询/修改调用方
+自己的会话绑定。全部按 **调用方 token + 自己的 session** 作用域,无法移动别人的流量;
+`model` 还会走 token 的模型白名单校验。
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET/POST | `/v1/oneapi/routing/nodes` | 列出能服务该 model 的节点,标出当前绑定 / 冷却 / 会话数 |
+| POST | `/v1/oneapi/routing/pin` | 把本会话钉到指定节点(`channel` 支持 id 或名称) |
+| POST | `/v1/oneapi/routing/cycle` | 轮换到下一个可用节点 |
+| POST | `/v1/oneapi/routing/unpin` | 解绑,回到自动选择 |
+
+节点信息里的 `upstream_model` 是**应用 model_mapping 之后**的真实上游模型
+(如 `coding_medium` → `MiniMax-M3`,openrouter 的 `~` 前缀会被去掉),
+这才是用户换 provider 时真正关心的东西。
+
+`Router` 侧新增:
+- `Nodes(group, model, session)` — 候选节点 + 实时状态;
+- `Pin(...)` — 校验节点确实能服务该 (group, model) 后重新绑定;**并清除该节点的冷却**
+  (用户显式选择,应当覆盖此前"这个节点不健康"的自动判断);
+- `Next(...)` — 按 channel id 顺序轮换并回绕,优先跳过冷却中的节点;若全都在冷却,
+  仍然移动(用户明确要求换,不该直接失败);
+- `ParseChannelId(...)` — 接受 id 或渠道名(精确优先,再不区分大小写,歧义则报错)。
+
+`Store.Rebind` 是 `Touch` 的"显式选择"版本:移动绑定与 per-channel 会话计数,
+但**不增加 requests** —— 此时还没有请求被路由。
+
+### 8.2 pi 命令 `/provider`
+
+插件 `~/.agents/config/pi/plugins/one-api-routing-footer/extensions/one-api-provider.ts`。
+
+| 用法 | 效果 |
+|------|------|
+| `/provider` | 交互式 picker(含"自动"项) |
+| `/provider list` | 列出候选,`●` 标记当前 |
+| `/provider <name|id>` | 钉到指定 provider |
+| `/provider next` | 轮换到下一个 |
+| `/provider auto` | 解绑,回到自动 |
+
+关键设计:**插件自己接管会话标识**。pi 不发 session id,若依赖服务端指纹,客户端
+就无法指名道姓地移动"自己那条绑定"。所以插件生成 `pi-<base36>-<rand>`,通过
+`before_provider_headers` 注入到每个 relay 请求的 `X-Session-Id`,并用**同一个 id**
+调用控制接口 —— 从而保证"换 provider"操作的正是 relay 请求所用的那条绑定。
+服务端 sticky 关闭时,命令会以 warning 提示 pin 可能不生效。
+
+## 8.5 429 语义与冷却时机修复 (Incident: 2026-08-02)
+
+**现象**:客户端收到 `429 当前分组上游负载已饱和，请稍后再试`,但当时并无负载压力。
+
+**根因**(两个独立缺陷叠加):
+
+1. **上游 429 的原因被抹掉**。`controller/relay.go` 无条件把所有 429 改写成
+   "上游负载已饱和"。实际上游返回的是
+   `Monthly usage limit reached. Resets in 3 days.`(channel 12 `opencode-go` 月度额度耗尽)。
+   429 既可能是**短时并发限流**(等几秒),也可能是**额度耗尽**(等 3 天 / 换渠道),
+   处置方式完全不同,却被压成同一句话 —— 使真实原因对用户和运维都不可见。
+   修复:`describeUpstream429` 保留通用提示的同时**追加上游原文**。
+
+2. **`RetryTimes=0` 时连冷却都不记**。原逻辑是 `if retryTimes > 0 { router.Fail(...) }`,
+   把"是否冷却"错误地绑定到"是否配置了重试"上。但冷却的作用域超出本次请求 —— 它还要
+   引导**后续请求**避开刚失败的节点。结果是 sticky 会话被钉死在一个已知坏掉的上游上
+   反复撞 429(日志中同一渠道累计 68 次),而路由层毫不知情。
+   修复:改为 `if retryable { ... }`,即**取决于错误本身是否可重试**,与重试配置无关。
+   同时把 `shouldRetry` 的结果提取为 `retryable` 变量,避免重复求值。
+
+3. **配置**:`RetryTimes` 由 `0` 改为 `3`(经 `PUT /api/option/` 持久化)。此前任何单渠道
+   故障都会直接抛给客户端,12 个渠道的冗余完全没被利用。
+
+> 注:429 不会触发 `ShouldDisableChannel` 自动禁用 —— 它只匹配 401 /
+> `insufficient_quota` / 含 `credit`、`balance` 等文案。opencode 的
+> "Monthly usage limit reached" 不含这些关键词,所以渠道仍处启用态、会继续被选中。
+> 这正是冷却机制必须独立生效的原因。
+
+### 8.5.1 冷却期内的路由行为(设计张力,已确认符合预期)
+
+当会话绑定的节点处于冷却期、但连续失败次数尚未达到 `STICKY_FAILURE_THRESHOLD`(默认 3)时,
+`chooseSticky` 走 `chooseAlternativeFrom` —— **仅为本次请求**随机挑一个健康节点,
+且**不 Touch(不重新 pin)**,以便冷却结束后会话能回到原节点。
+
+代价:这段时间内连续请求会落在**不同**节点上(实测 turn2/3/4 分别是
+volc-1 / volc-2 / volc-t-1),即冷却窗口内牺牲了 sticky。这是"保留原绑定"与
+"会话粘性"之间的取舍;一旦超过阈值则执行真正的迁移(`Forget` + 重新 pin),
+粘性恢复。无冷却时粘性完全正常(实测 6/6 同一节点)。
+
+## 9. 端到端验证 (Verification)
 
 真实 `pix` 会话(经日志代理录制 + `X-Oneapi-Channel` 响应头观测):
 
@@ -201,6 +291,37 @@ Responses API 风格的 body 用 `instructions` + `input` 首个条目等价处�
 | 固定节点被禁用后 | 会话重新固定到健康节点(`openrouter` → `aihubmix`)并保持稳定 |
 | 固定节点持续 5xx(`RetryTimes=3`) | 请求内故障转移成功,会话稳定在 `volc-t-1`,session 记录 failures=1 |
 
-单元测试:`relay/routing/session_pix_test.go` 用 `testdata/` 下**真实录制**的 pix 请求体
-断言"同会话跨轮同 key、不同会话不同 key、显式 header 优先于指纹",并覆盖命中记账与
-冷却节点可见性两处修复。
+`/provider` 命令验证(真实 pi TUI,pty 驱动):
+
+| 场景 | 结果 |
+|------|------|
+| `/provider next` | channel 5 → 6,TUI 弹出切换提示,**下一轮真实对话仍走 6** |
+| `/provider volc-2`(按名称) | 绑定变为 channel 3 |
+| `/provider list` | 列出候选并用 `●` 标记当前 |
+| `/provider`(picker) | 弹出 "Switch one-api provider",选中后绑定变为 channel 2 |
+| `/provider auto` | 提示回到自动,绑定被移除 |
+| 扩展代码直连实测 | pin 到 `minimax` / `volc-2` / `xiaomi` 后,连续两次真实 relay 请求的 `X-Oneapi-Channel` 均等于所选 provider |
+| `/provider bogus-name` | 报错 `channel cannot serve this group/model`,不改动绑定 |
+
+429/冷却修复验证(伪造一个恒定返回额度耗尽 429 的 priority=100 上游,复现事故):
+
+| 检查项 | 结果 |
+|--------|------|
+| 坏节点被冷却 | ✅ routing 页面显示该 channel 进入 cooling |
+| 自动故障转移 | ✅ 请求由 `opencode-zen` 成功返回(而非直接 429 给客户端) |
+| 后续请求避开坏节点 | ✅ turn2-4 均未再落到坏节点 |
+| 无坏节点时粘性不受影响 | ✅ 同一会话 6/6 落在 `volc-1`,requests 累计到 6 |
+| 真实 `opencode-go`(channel 12) | ✅ 现已被正确标记为 cooling |
+
+单测 `controller/relay_429_test.go`:上游原文(含额度文案与链接)必须保留、空上游回退到
+通用提示、"并发限流"与"额度耗尽"两种 429 不得产生相同消息、`shouldRetry` 对
+429/5xx/400/2xx/指定渠道的判定(它现在驱动冷却决策)。
+
+单元测试:
+- `relay/routing/session_pix_test.go` 用 `testdata/` 下**真实录制**的 pix 请求体断言
+  "同会话跨轮同 key、不同会话不同 key、显式 header 优先于指纹",并覆盖命中记账与
+  冷却节点可见性两处修复。
+- `relay/routing/pin_test.go` 覆盖 pin/rotate/unpin:显式选择生效、拒绝不合格渠道、
+  pin 清除冷却、轮换顺序与回绕、跳过冷却节点、全冷却时仍移动、`Rebind` 不计请求数。
+- `controller/routing_client_test.go` 覆盖请求解析(**body 只解析一次**的回归)、
+  query 兜底、header 优先、token 模型白名单、缺 session 的报错文案与错误响应形状。

@@ -10,53 +10,29 @@ import (
 	dbmodel "github.com/songquanpeng/one-api/model"
 )
 
-// ErrNoChannel is returned when no eligible channel can be found.
-var ErrNoChannel = errors.New("no satisfied channel")
-
 // channelProvider abstracts the channel lookup used by the Router so the sticky
-// selection logic can be unit tested without a database. The default
-// implementation reads the in-memory channel cache.
+// router does not directly depend on the global channel cache.
 type channelProvider interface {
-	// RandomSatisfied mirrors model.CacheGetRandomSatisfiedChannel.
-	RandomSatisfied(group, model string, ignoreFirstPriority bool) (*dbmodel.Channel, error)
-	// SatisfiedChannels mirrors model.CacheGetSatisfiedChannels.
+	// SatisfiedChannels returns all enabled channels for the given user group
+	// and model, ordered by priority (highest first).
 	SatisfiedChannels(group, model string) []*dbmodel.Channel
+	// RandomSatisfied returns a random channel (the non-sticky fallback).
+	RandomSatisfied(group, model string, must bool) (*dbmodel.Channel, error)
 }
 
-// dbChannelProvider is the production implementation backed by the shared
-// channel cache.
-type dbChannelProvider struct{}
-
-func (dbChannelProvider) RandomSatisfied(group, model string, ignoreFirstPriority bool) (*dbmodel.Channel, error) {
-	return dbmodel.CacheGetRandomSatisfiedChannel(group, model, ignoreFirstPriority)
-}
-
-func (dbChannelProvider) SatisfiedChannels(group, model string) []*dbmodel.Channel {
-	return dbmodel.CacheGetSatisfiedChannels(group, model)
-}
+// ErrNoChannel is returned when no eligible channel is available.
+var ErrNoChannel = errors.New("no available channel")
 
 // Router performs session-sticky routing with failover on top of the shared
-// channel cache. A session is pinned to a single upstream node ("channel") so
-// that session-local state stays warm; if that node later fails with a
-// retryable error, the relay fails over to another node and re-pins the session
-// to it.
+// channel cache.  It is safe for concurrent use.
 type Router struct {
-	store    *Store
 	provider channelProvider
+	store    *Store
 }
 
-// NewRouter builds a Router backed by the default channel cache. When store is
-// nil a new empty Store is created.
-func NewRouter(store *Store) *Router {
-	return newRouter(store, dbChannelProvider{})
-}
-
-func newRouter(store *Store, provider channelProvider) *Router {
-	if store == nil {
-		store = NewStore()
-	}
-	store.SetSessionTTL(time.Duration(config.StickySessionTTLSeconds) * time.Second)
-	return &Router{store: store, provider: provider}
+// NewRouter creates a Router backed by the given provider and store.
+func NewRouter(provider channelProvider, store *Store) *Router {
+	return &Router{provider: provider, store: store}
 }
 
 // Store exposes the underlying sticky store (used for diagnostics/tests).
@@ -116,17 +92,32 @@ func (r *Router) chooseSticky(group, model, session string) (*dbmodel.Channel, e
 	}
 	now := time.Now()
 	key := r.key(group, model, session)
+	threshold := int64(config.StickyFailureThreshold)
+	if threshold <= 0 {
+		threshold = 1
+	}
+
 	if id, ok := r.store.Get(key); ok {
-		if ch := findChannel(candidates, id); ch != nil && !r.store.IsCooledDown(id, now) {
-			// Record the hit as well as the miss: this keeps the request
-			// counter meaningful and, critically, refreshes LastSeen so the
-			// TTL pruner does not evict a session that is still active.
+		ch := findChannel(candidates, id)
+		if ch == nil {
+			// channel is gone for this model — full migration
+			r.store.Forget(key)
+		} else if !r.store.IsCooledDown(id, now) {
+			// happy path: channel exists and healthy
 			r.store.Touch(key, session, group, model, ch.Id)
 			return ch, nil
+		} else if r.store.GetConsecutiveFailures(key) < threshold {
+			// cooled down, but not enough consecutive failures to migrate the
+			// session — pick an alternative for THIS request only, keep the
+			// binding alive so the session returns to this channel once the
+			// cooldown expires. Don't Touch (don't re-pin).
+			return r.chooseAlternativeFrom(candidates, id)
+		} else {
+			// exceeded failure threshold — real migration
+			r.store.Forget(key)
 		}
-		// stale binding: the node is gone for this model or still cooling down
-		r.store.Forget(key)
 	}
+
 	// Prefer non-cooled-down nodes for a fresh binding so a session does not
 	// immediately land on a node that recently failed. If every node is cooling
 	// down, fall back to the full list rather than failing the request.
@@ -142,6 +133,36 @@ func (r *Router) chooseSticky(group, model, session string) (*dbmodel.Channel, e
 	ch := pickFirstPriority(eligible)
 	r.store.Touch(key, session, group, model, ch.Id)
 	return ch, nil
+}
+
+// chooseAlternativeFrom picks a channel from candidates that is not the
+// excluded id and is not cooled down. It does NOT re-pin the session — used
+// for transient failover while keeping the session bound to the original
+// channel.
+func (r *Router) chooseAlternativeFrom(candidates []*dbmodel.Channel, excludeId int) (*dbmodel.Channel, error) {
+	now := time.Now()
+	var eligible []*dbmodel.Channel
+	for _, ch := range candidates {
+		if ch.Id == excludeId {
+			continue
+		}
+		if r.store.IsCooledDown(ch.Id, now) {
+			continue
+		}
+		eligible = append(eligible, ch)
+	}
+	if len(eligible) == 0 {
+		// every other node is cooling down too — fall back to full list
+		for _, ch := range candidates {
+			if ch.Id != excludeId {
+				eligible = append(eligible, ch)
+			}
+		}
+	}
+	if len(eligible) == 0 {
+		return nil, ErrNoChannel
+	}
+	return eligible[rand.Intn(len(eligible))], nil
 }
 
 // ChooseAlternative selects a failover channel for a session, excluding the
@@ -172,7 +193,19 @@ func (r *Router) ChooseAlternative(group, model, session string, exclude map[int
 		return nil, ErrNoChannel
 	}
 	ch := eligible[rand.Intn(len(eligible))]
-	r.store.Touch(key, session, group, model, ch.Id)
+
+	// Stickiness: only re-pin the session to the alternative channel when the
+	// original channel has accumulated enough consecutive failures to prove it
+	// is persistently unhealthy. Below the threshold this is a transient
+	// failover — the session keeps its binding so it returns to the original
+	// node once the cooldown expires (preserving prompt cache / KV memory).
+	threshold := int64(config.StickyFailureThreshold)
+	if threshold <= 0 {
+		threshold = 1
+	}
+	if r.store.GetConsecutiveFailures(key) >= threshold {
+		r.store.Touch(key, session, group, model, ch.Id)
+	}
 	return ch, nil
 }
 
@@ -199,24 +232,57 @@ func findChannel(candidates []*dbmodel.Channel, id int) *dbmodel.Channel {
 	return nil
 }
 
-// pickFirstPriority returns a random channel from the top-priority tier. It
-// mirrors the priority handling of model.CacheGetRandomSatisfiedChannel.
-func pickFirstPriority(candidates []*dbmodel.Channel) *dbmodel.Channel {
-	endIdx := len(candidates)
-	if first := candidates[0].GetPriority(); first > 0 {
-		endIdx = 1
-		for endIdx < len(candidates) && candidates[endIdx].GetPriority() == first {
-			endIdx++
+// pickFirstPriority returns a random channel from among the highest-priority
+// channels in the slice. Callers must ensure the slice is non-empty.
+func pickFirstPriority(channels []*dbmodel.Channel) *dbmodel.Channel {
+	if len(channels) == 1 {
+		return channels[0]
+	}
+	bestPriority := channelPriority(channels[0])
+	topTier := []*dbmodel.Channel{channels[0]}
+	for _, ch := range channels[1:] {
+		p := channelPriority(ch)
+		if p > bestPriority {
+			bestPriority = p
+			topTier = []*dbmodel.Channel{ch}
+		} else if p == bestPriority {
+			topTier = append(topTier, ch)
 		}
 	}
-	return candidates[rand.Intn(endIdx)]
+	return topTier[rand.Intn(len(topTier))]
 }
 
-// defaultRouter is the process-wide router shared by the distributor middleware
-// and the relay retry loop so bindings stay consistent.
-var defaultRouter = NewRouter(nil)
+func channelPriority(ch *dbmodel.Channel) int64 {
+	if ch.Priority != nil {
+		return *ch.Priority
+	}
+	return 0
+}
 
 // DefaultRouter returns the process-wide session-sticky router.
 func DefaultRouter() *Router {
 	return defaultRouter
 }
+
+var defaultRouter = &Router{
+	provider: &channelCacheProvider{},
+	store: NewStore(),
+}
+
+// newRouter creates a Router with explicit provider and store, used in tests.
+func newRouter(store *Store, provider channelProvider) *Router {
+	return &Router{provider: provider, store: store}
+}
+
+// channelCacheProvider adapts the global channel memory cache to the
+// channelProvider interface.
+type channelCacheProvider struct{}
+
+func (p *channelCacheProvider) SatisfiedChannels(group, model string) []*dbmodel.Channel {
+	return dbmodel.CacheGetSatisfiedChannels(group, model)
+}
+
+func (p *channelCacheProvider) RandomSatisfied(group, model string, must bool) (*dbmodel.Channel, error) {
+	return dbmodel.CacheGetRandomSatisfiedChannel(group, model, must)
+}
+
