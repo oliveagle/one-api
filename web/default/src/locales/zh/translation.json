@@ -13,7 +13,8 @@
     "chat": "聊天",
     "login": "登录",
     "logout": "注销",
-    "register": "注册"
+    "register": "注册",
+    "routing": "路由"
   },
   "topup": {
     "title": "充值中心",
@@ -823,5 +824,37 @@
     "notice": {
       "password_copied": "新密码已复制到剪贴板：{{password}}"
     }
+  },
+  "routing": {
+    "title": "路由管理",
+    "auto_refresh": "自动刷新",
+    "refresh": "刷新",
+    "clear_all": "清空所有会话",
+    "enabled": "已启用",
+    "disabled": "未启用",
+    "models": "参与模型",
+    "cooldown_seconds": "失败冷却(秒)",
+    "session_ttl_seconds": "会话保留(秒)",
+    "session_id_header": "Session Header",
+    "statistics": "统计",
+    "active_sessions": "活跃会话",
+    "total_requests": "总请求",
+    "active_channels": "活跃渠道",
+    "channel_header": "渠道",
+    "channel_state": "状态",
+    "session_key": "会话 ID",
+    "model": "模型",
+    "group": "分组",
+    "channel_id": "渠道 ID",
+    "requests": "请求数",
+    "failures": "失败数",
+    "last_seen": "最后活动",
+    "first_seen": "首次活动",
+    "action": "操作",
+    "unbind": "解绑",
+    "unbind_success": "会话已解绑",
+    "clear_success": "已清空所有 routing 会话",
+    "no_sessions": "暂无会话",
+    "no_channels": "暂无活跃渠道"
   }
 }

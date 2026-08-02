@@ -96,6 +96,10 @@ var apiExpectedRoutes = []struct {
 	{"GET", "/api/log/self/search"},
 
 	{"GET", "/api/group/"},
+
+	{"GET", "/api/routing/status"},
+	{"DELETE", "/api/routing/session"},
+	{"DELETE", "/api/routing/sessions"},
 }
 
 // TestSetApiRouter_RegistersExpectedRoutes asserts that every route

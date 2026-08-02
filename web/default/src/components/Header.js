@@ -30,6 +30,12 @@ let headerButtons = [
     admin: true,
   },
   {
+    name: 'header.routing',
+    to: '/routing',
+    icon: 'random',
+    admin: true,
+  },
+  {
     name: 'header.token',
     to: '/token',
     icon: 'key',
