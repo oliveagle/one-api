@@ -235,14 +235,18 @@ func CacheGetRandomSatisfiedChannel(group string, model string, ignoreFirstPrior
 		return nil, errors.New("channel not found")
 	}
 	endIdx := len(channels)
-	// choose by priority
+	// choose by priority: partition at the first priority boundary so the
+	// highest-priority tier is always preferred. Unlike the old code (which
+	// only partitioned when the top priority was > 0), this also separates
+	// negative-priority tiers: channels with a negative priority (last-resort
+	// providers) stay out of the primary random pool and are only picked on
+	// explicit retry (ignoreFirstPriority) or when no higher tier exists.
 	firstChannel := channels[0]
-	if firstChannel.GetPriority() > 0 {
-		for i := range channels {
-			if channels[i].GetPriority() != firstChannel.GetPriority() {
-				endIdx = i
-				break
-			}
+	firstPriority := firstChannel.GetPriority()
+	for i := range channels {
+		if channels[i].GetPriority() != firstPriority {
+			endIdx = i
+			break
 		}
 	}
 	idx := rand.Intn(endIdx)
