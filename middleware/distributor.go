@@ -73,6 +73,7 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 		c.Set(ctxkey.SystemPrompt, *channel.SystemPrompt)
 	}
 	c.Set(ctxkey.ModelMapping, channel.GetModelMapping())
+	c.Set(ctxkey.Headers, channel.GetHeaders())
 	c.Set(ctxkey.OriginalModel, modelName) // for retry
 	c.Request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", channel.Key))
 	c.Set(ctxkey.BaseURL, channel.GetBaseURL())

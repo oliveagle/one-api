@@ -21,6 +21,7 @@ type Meta struct {
 	UserId       int
 	Group        string
 	ModelMapping map[string]string
+	Headers      map[string]string
 	// BaseURL is the proxy url set in the channel config
 	BaseURL  string
 	APIKey   string
@@ -47,6 +48,7 @@ func GetByContext(c *gin.Context) *Meta {
 		UserId:             c.GetInt(ctxkey.Id),
 		Group:              c.GetString(ctxkey.Group),
 		ModelMapping:       c.GetStringMapString(ctxkey.ModelMapping),
+		Headers:            c.GetStringMapString(ctxkey.Headers),
 		OriginModelName:    c.GetString(ctxkey.RequestModel),
 		BaseURL:            c.GetString(ctxkey.BaseURL),
 		APIKey:             strings.TrimPrefix(c.Request.Header.Get("Authorization"), "Bearer "),

@@ -16,6 +16,11 @@ func SetupCommonRequestHeader(c *gin.Context, req *http.Request, meta *meta.Meta
 	if meta.IsStream && c.Request.Header.Get("Accept") == "" {
 		req.Header.Set("Accept", "text/event-stream")
 	}
+	// Inject channel-configured custom headers. These override any header
+	// with the same name set above (e.g. User-Agent, Accept).
+	for k, v := range meta.Headers {
+		req.Header.Set(k, v)
+	}
 }
 
 func DoRequestHelper(a Adaptor, c *gin.Context, meta *meta.Meta, requestBody io.Reader) (*http.Response, error) {
