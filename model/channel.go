@@ -38,6 +38,7 @@ type Channel struct {
 	Priority           *int64  `json:"priority" gorm:"bigint;default:0"`
 	Config             string  `json:"config"`
 	SystemPrompt       *string `json:"system_prompt" gorm:"type:text"`
+	Headers            *string `json:"headers" gorm:"type:varchar(1024);default:''"`
 }
 
 type ChannelConfig struct {
@@ -127,6 +128,21 @@ func (channel *Channel) GetModelMapping() map[string]string {
 		return nil
 	}
 	return modelMapping
+}
+
+// GetHeaders parses the JSON-encoded Headers field and returns the resulting
+// map[string]string. It returns nil when the field is empty or unparseable so
+// callers can safely range over the result without a nil check.
+func (channel *Channel) GetHeaders() map[string]string {
+	if channel.Headers == nil || *channel.Headers == "" || *channel.Headers == "{}" {
+		return nil
+	}
+	headers := make(map[string]string)
+	if err := json.Unmarshal([]byte(*channel.Headers), &headers); err != nil {
+		logger.SysError(fmt.Sprintf("failed to unmarshal headers for channel %d, error: %s", channel.Id, err.Error()))
+		return nil
+	}
+	return headers
 }
 
 func (channel *Channel) Insert() error {
