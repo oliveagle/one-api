@@ -98,7 +98,15 @@ func RelayTextHelper(c *gin.Context) *model.ErrorWithStatusCode {
 }
 
 func getRequestBody(c *gin.Context, meta *meta.Meta, textRequest *model.GeneralOpenAIRequest, adaptor adaptor.Adaptor) (io.Reader, error) {
-	if !config.EnforceIncludeUsage &&
+	// Normalize tool_choice "any" (non-standard extension) to "required"
+	// so that strict upstreams like codex API do not reject it.
+	needConvert := false
+	if tc, ok := textRequest.ToolChoice.(string); ok && tc == "any" {
+		textRequest.ToolChoice = "required"
+		needConvert = true
+	}
+
+	if !needConvert && !config.EnforceIncludeUsage &&
 		meta.APIType == apitype.OpenAI &&
 		meta.OriginModelName == meta.ActualModelName &&
 		meta.ChannelType != channeltype.Baichuan &&
