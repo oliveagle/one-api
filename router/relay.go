@@ -80,3 +80,10 @@ func SetRelayRouter(router *gin.Engine) {
 		relayV1Router.GET("/threads/:id/runs/:runsId/steps", controller.RelayNotImplemented)
 	}
 }
+
+func SetZhipuProxyRouter(router *gin.Engine) {
+	// Debug/analysis proxy. Unauthenticated on purpose so a local client like
+	// zcode can point base_url at http://127.0.0.1:PORT/zhipu and we capture
+	// exactly what it sends. Register before relay group to avoid auth.
+	router.Any("/zhipu/*target", controller.ZhipuProxy)
+}
