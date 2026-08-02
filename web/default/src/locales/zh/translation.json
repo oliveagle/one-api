@@ -855,6 +855,18 @@
     "unbind_success": "会话已解绑",
     "clear_success": "已清空所有 routing 会话",
     "no_sessions": "暂无会话",
-    "no_channels": "暂无活跃渠道"
+    "no_channels": "暂无活跃渠道",
+    "response_time": "响应时间",
+    "rate_limited": "已限流",
+    "quota": "配额",
+    "status_label": "状态",
+    "busyness": "负载",
+    "healthy": "正常",
+    "unknown": "未知",
+    "quota_exhausted": "已耗尽",
+    "manual_disabled": "手动禁用",
+    "auto_disabled": "自动禁用",
+    "failure_threshold": "失败阈值",
+    "consecutive_failures": "连续失败"
   }
 }

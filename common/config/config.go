@@ -218,3 +218,12 @@ var StickyCooldownSeconds = env.Int("STICKY_COOLDOWN_SECONDS", 60)
 // routing store after its last request before being pruned. This bounds memory
 // usage of the realtime session registry. Zero disables pruning.
 var StickySessionTTLSeconds = env.Int("STICKY_SESSION_TTL_SECONDS", 24*60*60)
+
+// StickyFailureThreshold is how many consecutive retryable failures a session
+// must accumulate on a channel before it is allowed to migrate to a different
+// channel. A value of 1 means "switch on the first error" (legacy behaviour).
+// Higher values make sessions stickier: a single transient 429 or 5xx will
+// cool the channel briefly but keep the session pinned, preserving the prompt
+// cache / KV memory. The threshold is per-session per-channel and resets on
+// the first successful request.
+var StickyFailureThreshold = env.Int("STICKY_FAILURE_THRESHOLD", 3)

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common"
@@ -65,8 +66,11 @@ func Relay(c *gin.Context) {
 	originalModel := c.GetString(ctxkey.OriginalModel)
 	go processChannelRelayError(ctx, userId, channelId, channelName, *bizErr)
 	requestId := c.GetString(helper.RequestIdKey)
+	// retryable describes the *error*; retryTimes describes the configuration.
+	// Keep them separate: cooldown depends on the former, the retry loop on both.
+	retryable := shouldRetry(c, bizErr.StatusCode)
 	retryTimes := config.RetryTimes
-	if !shouldRetry(c, bizErr.StatusCode) {
+	if !retryable {
 		logger.Errorf(ctx, "relay error happen, status code is %d, won't retry in this case", bizErr.StatusCode)
 		retryTimes = 0
 	}
@@ -78,7 +82,14 @@ func Relay(c *gin.Context) {
 	// others) do not immediately bounce back to it. Non-retryable errors (e.g.
 	// client 400s) are the client's fault, not the node's, so they do not cool
 	// the node down.
-	if retryTimes > 0 {
+	//
+	// This is keyed on whether the error itself is retryable, NOT on whether
+	// retries are enabled. Cooldown outlives this request: it also steers the
+	// *next* request away from a node that just failed. Gating it on
+	// retryTimes > 0 meant that with RetryTimes=0 a sticky session stayed pinned
+	// to a node known to be broken (e.g. an upstream whose monthly quota is
+	// exhausted) and kept hitting it, with the router none the wiser.
+	if retryable {
 		router.Fail(group, originalModel, sessionKey, lastFailedChannelId)
 	}
 
@@ -124,7 +135,7 @@ func Relay(c *gin.Context) {
 	}
 	if bizErr != nil {
 		if bizErr.StatusCode == http.StatusTooManyRequests {
-			bizErr.Error.Message = "当前分组上游负载已饱和，请稍后再试"
+			bizErr.Error.Message = describeUpstream429(bizErr.Error.Message)
 		}
 
 		// BUG: bizErr is in race condition
@@ -133,6 +144,25 @@ func Relay(c *gin.Context) {
 			"error": bizErr.Error,
 		})
 	}
+}
+
+// describeUpstream429 builds the client-facing message for an upstream 429.
+//
+// A 429 can mean very different things — short-lived concurrency throttling
+// ("retry in a few seconds") or an exhausted quota ("retry in 3 days, or switch
+// upstream"). This previously replaced every 429 with a single "上游负载已饱和"
+// string, which erased that distinction and made the real cause invisible to
+// both users and operators.
+//
+// The generic hint is kept (it is the right advice for plain throttling) but the
+// upstream's own explanation is always appended, so the actual reason survives.
+func describeUpstream429(upstream string) string {
+	const generic = "当前分组上游负载已饱和，请稍后再试"
+	upstream = strings.TrimSpace(upstream)
+	if upstream == "" {
+		return generic
+	}
+	return generic + "（上游返回：" + upstream + "）"
 }
 
 func shouldRetry(c *gin.Context, statusCode int) bool {

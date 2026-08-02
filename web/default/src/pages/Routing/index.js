@@ -8,17 +8,79 @@ import {
   Message,
   Segment,
   Table,
+  Popup,
 } from 'semantic-ui-react';
 import { useTranslation } from 'react-i18next';
 import { API, showError, showSuccess, timestamp2string } from '../../helpers';
 
 const REFRESH_INTERVAL_MS = 5000;
 
-function renderCooldown(until) {
-  if (!until) {
-    return <Label basic color='green'>正常</Label>;
+// Channel status constants (mirrors model/channel.go).
+const STATUS_ENABLED = 1;
+const STATUS_MANUAL_DISABLED = 2;
+const STATUS_AUTO_DISABLED = 3;
+
+function statusBadge(status, t) {
+  switch (status) {
+    case STATUS_ENABLED:
+      return (
+        <Label basic color='green' size='tiny'>
+          <Icon name='check' /> {t('routing.healthy')}
+        </Label>
+      );
+    case STATUS_MANUAL_DISABLED:
+      return (
+        <Label basic color='red' size='tiny'>
+          <Icon name='ban' /> {t('routing.manual_disabled')}
+        </Label>
+      );
+    case STATUS_AUTO_DISABLED:
+      return (
+        <Label basic color='orange' size='tiny'>
+          <Icon name='warning sign' /> {t('routing.auto_disabled')}
+        </Label>
+      );
+    default:
+      return (
+        <Label basic size='tiny'>
+          {t('routing.unknown')}
+        </Label>
+      );
   }
-  return <Label basic color='orange'>冷却中</Label>;
+}
+
+function cooldownBadge(until, t) {
+  if (!until) return null;
+  return (
+    <Label basic color='orange' size='tiny'>
+      <Icon name='clock' /> {t('routing.rate_limited')}
+    </Label>
+  );
+}
+
+function quotaBadge(balance, t) {
+  if (balance === 0 || balance === undefined) return null;
+  if (balance < 0.01) {
+    return (
+      <Label basic color='red' size='tiny'>
+        <Icon name='warning' /> {t('routing.quota_exhausted')}
+      </Label>
+    );
+  }
+  if (balance < 1) {
+    return (
+      <Label basic color='yellow' size='tiny'>
+        ${balance.toFixed(2)}
+      </Label>
+    );
+  }
+  return <span>${balance.toFixed(2)}</span>;
+}
+
+function responseTimeMs(ms) {
+  if (!ms || ms <= 0) return '—';
+  if (ms >= 1000) return `${(ms / 1000).toFixed(1)}s`;
+  return `${ms}ms`;
 }
 
 const Routing = () => {
@@ -97,7 +159,16 @@ const Routing = () => {
 
   const sessions = data ? data.sessions : [];
   const channels = data ? data.channels : [];
+  const channelNames = data ? data.channel_names || {} : {};
   const totalRequests = sessions.reduce((sum, s) => sum + s.requests, 0);
+
+  function channelLabel(id) {
+    const name = channelNames[id];
+    if (name) {
+      return `${name} (#${id})`;
+    }
+    return `#${id}`;
+  }
 
   return (
     <div className='dashboard-container'>
@@ -160,6 +231,10 @@ const Routing = () => {
                 <Icon name='sliders horizontal' />
                 {t('routing.session_id_header')}: {data.session_id_header}
               </Label>
+              <Label size='large' basic>
+                <Icon name='shield' />
+                {t('routing.failure_threshold')}: {data.failure_threshold}
+              </Label>
             </Segment>
           )}
 
@@ -172,25 +247,89 @@ const Routing = () => {
             </Message>
           )}
 
-          <Table basic='very' compact>
+          {/* ---- Channel health table ---- */}
+          <Table basic='very' compact celled striped>
             <Table.Header>
               <Table.Row>
                 <Table.HeaderCell>{t('routing.channel_header')}</Table.HeaderCell>
-                <Table.HeaderCell>{t('routing.active_sessions')}</Table.HeaderCell>
+                <Table.HeaderCell>{t('routing.status_label')}</Table.HeaderCell>
+                <Table.HeaderCell textAlign='center'>{t('routing.active_sessions')}</Table.HeaderCell>
+                <Table.HeaderCell textAlign='center'>{t('routing.requests')}</Table.HeaderCell>
+                <Table.HeaderCell textAlign='center'>{t('routing.failures')}</Table.HeaderCell>
+                <Table.HeaderCell textAlign='center'>{t('routing.response_time')}</Table.HeaderCell>
+                <Table.HeaderCell textAlign='center'>{t('routing.quota')}</Table.HeaderCell>
                 <Table.HeaderCell>{t('routing.channel_state')}</Table.HeaderCell>
               </Table.Row>
             </Table.Header>
             <Table.Body>
               {channels.map((ch) => (
-                <Table.Row key={ch.channel_id}>
-                  <Table.Cell>#{ch.channel_id}</Table.Cell>
-                  <Table.Cell>{ch.sessions}</Table.Cell>
-                  <Table.Cell>{renderCooldown(ch.cooling_until)}</Table.Cell>
+                <Table.Row
+                  key={ch.channel_id}
+                  style={
+                    ch.status !== STATUS_ENABLED
+                      ? { opacity: 0.55 }
+                      : undefined
+                  }
+                >
+                  <Table.Cell>
+                    <span style={{ fontWeight: 500 }}>
+                      {ch.name || channelLabel(ch.channel_id)}
+                    </span>
+                    <span style={{ color: '#999', marginLeft: 6, fontSize: '0.85em' }}>
+                      #{ch.channel_id}
+                    </span>
+                  </Table.Cell>
+                  <Table.Cell>
+                    {statusBadge(ch.status, t)}
+                    {cooldownBadge(ch.cooling_until, t)}
+                  </Table.Cell>
+                  <Table.Cell textAlign='center'>{ch.sessions}</Table.Cell>
+                  <Table.Cell textAlign='center'>{ch.requests}</Table.Cell>
+                  <Table.Cell textAlign='center'>
+                    {ch.failures > 0 ? (
+                      <Label basic color='orange' size='tiny'>
+                        {ch.failures}
+                      </Label>
+                    ) : (
+                      0
+                    )}
+                  </Table.Cell>
+                  <Table.Cell textAlign='center'>
+                    {responseTimeMs(ch.response_time)}
+                  </Table.Cell>
+                  <Table.Cell textAlign='center'>
+                    {quotaBadge(ch.balance, t)}
+                  </Table.Cell>
+                  <Table.Cell>
+                    <Popup
+                      content={`Busyness: ${ch.busyness.toFixed(1)}`}
+                      trigger={
+                        <Icon
+                          name={
+                            ch.busyness > 0
+                              ? 'arrow up'
+                              : ch.busyness < 0
+                              ? 'arrow down'
+                              : 'minus'
+                          }
+                          color={
+                            ch.busyness > 0
+                              ? 'red'
+                              : ch.busyness < 0
+                              ? 'grey'
+                              : 'grey'
+                          }
+                        />
+                      }
+                      size='tiny'
+                      position='top center'
+                    />
+                  </Table.Cell>
                 </Table.Row>
               ))}
               {channels.length === 0 && (
                 <Table.Row>
-                  <Table.Cell colSpan='3' textAlign='center'>
+                  <Table.Cell colSpan='8' textAlign='center'>
                     {t('routing.no_channels')}
                   </Table.Cell>
                 </Table.Row>
@@ -198,6 +337,7 @@ const Routing = () => {
             </Table.Body>
           </Table>
 
+          {/* ---- Sessions table ---- */}
           <Table basic='very' compact>
             <Table.Header>
               <Table.Row>
@@ -207,6 +347,7 @@ const Routing = () => {
                 <Table.HeaderCell>{t('routing.channel_id')}</Table.HeaderCell>
                 <Table.HeaderCell>{t('routing.requests')}</Table.HeaderCell>
                 <Table.HeaderCell>{t('routing.failures')}</Table.HeaderCell>
+                <Table.HeaderCell>{t('routing.consecutive_failures')}</Table.HeaderCell>
                 <Table.HeaderCell>{t('routing.last_seen')}</Table.HeaderCell>
                 <Table.HeaderCell>{t('routing.action')}</Table.HeaderCell>
               </Table.Row>
@@ -219,12 +360,25 @@ const Routing = () => {
                   </Table.Cell>
                   <Table.Cell>{s.model}</Table.Cell>
                   <Table.Cell>{s.group}</Table.Cell>
-                  <Table.Cell>#{s.channel_id}</Table.Cell>
+                  <Table.Cell>{channelLabel(s.channel_id)}</Table.Cell>
                   <Table.Cell>{s.requests}</Table.Cell>
                   <Table.Cell>
                     {s.failures > 0 ? (
                       <Label basic color='orange'>
                         {s.failures}
+                      </Label>
+                    ) : (
+                      0
+                    )}
+                  </Table.Cell>
+                  <Table.Cell>
+                    {s.consecutive_failures > 0 ? (
+                      <Label
+                        basic
+                        color={s.consecutive_failures >= (data.failure_threshold || 3) ? 'red' : 'yellow'}
+                        size='tiny'
+                      >
+                        {s.consecutive_failures}
                       </Label>
                     ) : (
                       0
@@ -245,7 +399,7 @@ const Routing = () => {
               ))}
               {sessions.length === 0 && (
                 <Table.Row>
-                  <Table.Cell colSpan='8' textAlign='center'>
+                  <Table.Cell colSpan='9' textAlign='center'>
                     {t('routing.no_sessions')}
                   </Table.Cell>
                 </Table.Row>
