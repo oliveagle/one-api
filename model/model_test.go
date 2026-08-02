@@ -326,3 +326,79 @@ func TestUserDelete(t *testing.T) {
 		t.Errorf("user status = %d, want %d (deleted)", got.Status, UserStatusDeleted)
 	}
 }
+
+func TestChannelGetHeaders_NilField(t *testing.T) {
+	ch := &Channel{Id: 1}
+	if got := ch.GetHeaders(); got != nil {
+		t.Errorf("GetHeaders with nil Headers = %v, want nil", got)
+	}
+}
+
+func TestChannelGetHeaders_EmptyString(t *testing.T) {
+	s := ""
+	ch := &Channel{Id: 1, Headers: &s}
+	if got := ch.GetHeaders(); got != nil {
+		t.Errorf("GetHeaders with empty string = %v, want nil", got)
+	}
+}
+
+func TestChannelGetHeaders_EmptyObject(t *testing.T) {
+	s := "{}"
+	ch := &Channel{Id: 1, Headers: &s}
+	if got := ch.GetHeaders(); got != nil {
+		t.Errorf("GetHeaders with '{}' = %v, want nil", got)
+	}
+}
+
+func TestChannelGetHeaders_ValidJSON(t *testing.T) {
+	s := `{"User-Agent":"opencode","X-Custom":"value"}`
+	ch := &Channel{Id: 1, Headers: &s}
+	got := ch.GetHeaders()
+	if got == nil {
+		t.Fatal("GetHeaders returned nil for valid JSON")
+	}
+	if got["User-Agent"] != "opencode" {
+		t.Errorf("User-Agent = %q, want opencode", got["User-Agent"])
+	}
+	if got["X-Custom"] != "value" {
+		t.Errorf("X-Custom = %q, want value", got["X-Custom"])
+	}
+}
+
+func TestChannelGetHeaders_InvalidJSON(t *testing.T) {
+	s := "not-json"
+	ch := &Channel{Id: 1, Headers: &s}
+	if got := ch.GetHeaders(); got != nil {
+		t.Errorf("GetHeaders with invalid JSON = %v, want nil", got)
+	}
+}
+
+func TestChannelGetHeaders_RoundTrip(t *testing.T) {
+	setupMockDB(t)
+	headersJSON := `{"User-Agent":"opencode","Accept":"application/json"}`
+	ch := &Channel{
+		Type:        1,
+		Key:         "sk-test",
+		Status:      ChannelStatusEnabled,
+		Name:        "headers-test",
+		Models:      "gpt-4",
+		Group:       "default",
+		Headers:     &headersJSON,
+		CreatedTime: time.Now().Unix(),
+	}
+	if err := ch.Insert(); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+
+	got, err := GetChannelById(ch.Id, true)
+	if err != nil {
+		t.Fatalf("GetChannelById: %v", err)
+	}
+	parsed := got.GetHeaders()
+	if parsed == nil {
+		t.Fatal("GetHeaders returned nil after round-trip")
+	}
+	if parsed["User-Agent"] != "opencode" {
+		t.Errorf("User-Agent = %q, want opencode", parsed["User-Agent"])
+	}
+}
