@@ -19,6 +19,7 @@ import (
 	"github.com/songquanpeng/one-api/relay/controller"
 	"github.com/songquanpeng/one-api/relay/model"
 	"github.com/songquanpeng/one-api/relay/relaymode"
+	"github.com/songquanpeng/one-api/relay/routing"
 )
 
 // https://platform.openai.com/docs/api-reference/chat
@@ -69,16 +70,37 @@ func Relay(c *gin.Context) {
 		logger.Errorf(ctx, "relay error happen, status code is %d, won't retry in this case", bizErr.StatusCode)
 		retryTimes = 0
 	}
+	sessionKey := c.GetString(ctxkey.SessionKey)
+	router := routing.DefaultRouter()
+	exclude := make(map[int]bool)
+	exclude[lastFailedChannelId] = true
+	// After a retryable error, cool the failed node down so this session (and
+	// others) do not immediately bounce back to it. Non-retryable errors (e.g.
+	// client 400s) are the client's fault, not the node's, so they do not cool
+	// the node down.
+	if retryTimes > 0 {
+		router.Fail(group, originalModel, sessionKey, lastFailedChannelId)
+	}
+
 	for i := retryTimes; i > 0; i-- {
-		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, originalModel, i != retryTimes)
+		var channel *dbmodel.Channel
+		var err error
+		if sessionKey != "" && router.Enabled() {
+			// Sticky failover: pick a different healthy node and re-pin the
+			// session to it.
+			channel, err = router.ChooseAlternative(group, originalModel, sessionKey, exclude)
+		} else {
+			channel, err = dbmodel.CacheGetRandomSatisfiedChannel(group, originalModel, i != retryTimes)
+		}
 		if err != nil {
-			logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %+v", err)
+			logger.Errorf(ctx, "choose channel for retry failed: %+v", err)
 			break
 		}
 		logger.Infof(ctx, "using channel #%d to retry (remain times %d)", channel.Id, i)
 		if channel.Id == lastFailedChannelId {
 			continue
 		}
+		exclude[channel.Id] = true
 		middleware.SetupContextForSelectedChannel(c, channel, originalModel)
 		requestBody, err := common.GetRequestBody(c)
 		c.Request.Body = io.NopCloser(bytes.NewBuffer(requestBody))
@@ -89,7 +111,16 @@ func Relay(c *gin.Context) {
 		channelId := c.GetInt(ctxkey.ChannelId)
 		lastFailedChannelId = channelId
 		channelName := c.GetString(ctxkey.ChannelName)
-		go processChannelRelayError(ctx, userId, channelId, channelName, *bizErr)
+		// Only cool the node down (and keep trying other nodes) on retryable
+		// errors that indicate a node problem. A non-retryable error (e.g. a
+		// client 400) is not the node's fault, so stop retrying.
+		if shouldRetry(c, bizErr.StatusCode) {
+			router.Fail(group, originalModel, sessionKey, channelId)
+			go processChannelRelayError(ctx, userId, channelId, channelName, *bizErr)
+		} else {
+			go processChannelRelayError(ctx, userId, channelId, channelName, *bizErr)
+			break
+		}
 	}
 	if bizErr != nil {
 		if bizErr.StatusCode == http.StatusTooManyRequests {

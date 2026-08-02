@@ -164,3 +164,57 @@ var UserContentRequestTimeout = env.Int("USER_CONTENT_REQUEST_TIMEOUT", 30)
 
 var EnforceIncludeUsage = env.Bool("ENFORCE_INCLUDE_USAGE", false)
 var TestPrompt = env.String("TEST_PROMPT", "Output only your specific model name with no additional text.")
+
+// Session-sticky routing.
+//
+// When enabled, requests that carry a session identifier are routed to the
+// same upstream channel ("node") for the lifetime of that session, instead of
+// being randomly load balanced across all channels. This keeps session-local
+// state (prompt caches, KV memory, tool history) warm on a single node.
+// If the sticky node later fails with a retryable error (rate limit, quota
+// exhausted, 5xx), the relay fails over to another healthy node and re-pins the
+// session to it.
+var StickyRoutingEnabled = strings.ToLower(os.Getenv("STICKY_ROUTING_ENABLED")) == "true"
+
+// StickyModels is a comma separated allowlist of model names that participate
+// in session-sticky routing. Empty means every model participates (only when a
+// session identifier is present on the request).
+var StickyModels = env.String("STICKY_MODELS", "")
+
+// SessionIdHeader is the HTTP header used to carry the agent session id.
+// A coding agent (e.g. Claude Code / Codex) should be configured to send this
+// header on every request belonging to the same session.
+var SessionIdHeader = env.String("SESSION_ID_HEADER", "X-Session-Id")
+
+// SessionIdBodyField is the top-level JSON body field used as a fallback when
+// the session id header is absent.
+var SessionIdBodyField = env.String("SESSION_ID_BODY_FIELD", "session_id")
+
+// SessionFingerprintEnabled controls the last-resort session identity source:
+// a fingerprint derived from the request's stable conversation prefix (system
+// prompt + first user message).
+//
+// Most OpenAI-compatible coding agents (pi/pix, and anything built on the
+// openai JS/python SDK) send no session id at all -- not as a header and not in
+// the body -- so header/body extraction alone leaves every request unpinned and
+// sticky routing degrades to random load balancing. The fingerprint recovers
+// stickiness for those clients because each turn of one agent session replays a
+// byte-identical prefix. Set to false to require an explicit session id.
+var SessionFingerprintEnabled = env.Bool("SESSION_FINGERPRINT_ENABLED", true)
+
+// StickyFallbackToToken pins requests that have no derivable session identity
+// to a node per API token. This keeps a single-token deployment on one node,
+// which is coarser than per-session stickiness, so it is off by default: with
+// the fingerprint enabled, distinct sessions on the same token should still be
+// able to spread across nodes.
+var StickyFallbackToToken = env.Bool("STICKY_FALLBACK_TO_TOKEN", false)
+
+// StickyCooldownSeconds is how long a node that failed during a session is
+// kept out of the sticky selection, so the session does not immediately bounce
+// back to a node that just returned an error. Zero disables the cooldown.
+var StickyCooldownSeconds = env.Int("STICKY_COOLDOWN_SECONDS", 60)
+
+// StickySessionTTLSeconds is how long a sticky session record is kept in the
+// routing store after its last request before being pruned. This bounds memory
+// usage of the realtime session registry. Zero disables pruning.
+var StickySessionTTLSeconds = env.Int("STICKY_SESSION_TTL_SECONDS", 24*60*60)

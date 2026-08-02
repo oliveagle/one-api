@@ -253,3 +253,19 @@ func CacheGetRandomSatisfiedChannel(group string, model string, ignoreFirstPrior
 	}
 	return channels[idx], nil
 }
+
+// CacheGetSatisfiedChannels returns the memory-cached candidate channels for
+// (group, model), sorted by priority descending (highest first). It is used by
+// the session-sticky routing module to bind a session to a node and to pick
+// failover alternatives. It returns nil when the memory cache is disabled.
+//
+// The returned slice is owned by the channel cache and must not be mutated by
+// callers.
+func CacheGetSatisfiedChannels(group string, model string) []*Channel {
+	if !config.MemoryCacheEnabled {
+		return nil
+	}
+	channelSyncLock.RLock()
+	defer channelSyncLock.RUnlock()
+	return group2model2channels[group][model]
+}

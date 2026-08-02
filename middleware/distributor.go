@@ -7,10 +7,12 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/ctxkey"
 	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/model"
 	"github.com/songquanpeng/one-api/relay/channeltype"
+	"github.com/songquanpeng/one-api/relay/routing"
 )
 
 type ModelRequest struct {
@@ -43,12 +45,35 @@ func Distribute() func(c *gin.Context) {
 			}
 		} else {
 			requestModel = c.GetString(ctxkey.RequestModel)
+			// Derive the agent session identity and use session-sticky routing
+			// so the session sticks to one upstream node, with failover to
+			// other nodes handled by the relay retry loop.
+			//
+			// ResolveSession tries an explicit session id (header, then body)
+			// and finally a conversation fingerprint, which is what makes this
+			// work for agents like pi/pix that send no session id at all.
+			sessionKey, sessionSource := routing.ResolveSession(c)
+			if sessionKey == "" && config.StickyFallbackToToken {
+				// Last resort: pin per API token. Coarser than per-session, so
+				// it is opt-in.
+				if tokenId := c.GetInt(ctxkey.TokenId); tokenId > 0 {
+					sessionKey = fmt.Sprintf("token:%d", tokenId)
+					sessionSource = "token"
+				}
+			}
+			// The retry loop in controller/relay.go reads this to fail over
+			// within the same session, so it must be set for *every* derived
+			// key, not just header/body ones.
+			if sessionKey != "" {
+				c.Set(ctxkey.SessionKey, sessionKey)
+				c.Set(ctxkey.SessionSource, sessionSource)
+			}
 			// For GET/DELETE requests (e.g., Responses API CRUD endpoints),
 			// there's no request body, so requestModel may be empty.
 			// In this case, we still try to find a channel - it will be up to
 			// the upstream to handle the request or return an error.
 			var err error
-			channel, err = model.CacheGetRandomSatisfiedChannel(userGroup, requestModel, false)
+			channel, err = routing.DefaultRouter().Choose(userGroup, requestModel, sessionKey)
 			if err != nil {
 				message := fmt.Sprintf("当前分组 %s 下对于模型 %s 无可用渠道", userGroup, requestModel)
 				if channel != nil {
@@ -59,7 +84,10 @@ func Distribute() func(c *gin.Context) {
 				return
 			}
 		}
-		logger.Debugf(ctx, "user id %d, user group: %s, request model: %s, using channel #%d", userId, userGroup, requestModel, channel.Id)
+		sessionKey := c.GetString(ctxkey.SessionKey)
+		logger.Debugf(ctx, "user id %d, user group: %s, request model: %s, using channel #%d, session %q (source=%s, sticky=%t)",
+			userId, userGroup, requestModel, channel.Id, sessionKey,
+			c.GetString(ctxkey.SessionSource), routing.DefaultRouter().StickyAppliesTo(requestModel, sessionKey))
 		SetupContextForSelectedChannel(c, channel, requestModel)
 		c.Next()
 	}

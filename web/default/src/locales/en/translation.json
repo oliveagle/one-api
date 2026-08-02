@@ -13,7 +13,8 @@
     "chat": "Chat",
     "login": "Login",
     "logout": "Logout",
-    "register": "Register"
+    "register": "Register",
+    "routing": "Routing"
   },
   "topup": {
     "title": "Top Up Center",
@@ -827,5 +828,37 @@
     "notice": {
       "password_copied": "New password copied to clipboard: {{password}}"
     }
+  },
+  "routing": {
+    "title": "Routing Management",
+    "auto_refresh": "Auto refresh",
+    "refresh": "Refresh",
+    "clear_all": "Clear all sessions",
+    "enabled": "Enabled",
+    "disabled": "Disabled",
+    "models": "Models",
+    "cooldown_seconds": "Cooldown (s)",
+    "session_ttl_seconds": "Session TTL (s)",
+    "session_id_header": "Session Header",
+    "statistics": "Statistics",
+    "active_sessions": "active sessions",
+    "total_requests": "total requests",
+    "active_channels": "active channels",
+    "channel_header": "Channel",
+    "channel_state": "State",
+    "session_key": "Session ID",
+    "model": "Model",
+    "group": "Group",
+    "channel_id": "Channel ID",
+    "requests": "Requests",
+    "failures": "Failures",
+    "last_seen": "Last seen",
+    "first_seen": "First seen",
+    "action": "Action",
+    "unbind": "Unbind",
+    "unbind_success": "Session unbound",
+    "clear_success": "All routing sessions cleared",
+    "no_sessions": "No sessions",
+    "no_channels": "No active channels"
   }
 }

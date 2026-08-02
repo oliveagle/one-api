@@ -26,6 +26,7 @@ import Log from './pages/Log';
 import Chat from './pages/Chat';
 import LarkOAuth from './components/LarkOAuth';
 import Dashboard from './pages/Dashboard';
+import Routing from './pages/Routing';
 
 const Home = lazy(() => import('./pages/Home'));
 const About = lazy(() => import('./pages/About'));
@@ -107,6 +108,14 @@ function App() {
         element={
           <PrivateRoute>
             <Channel />
+          </PrivateRoute>
+        }
+      />
+      <Route
+        path='/routing'
+        element={
+          <PrivateRoute>
+            <Routing />
           </PrivateRoute>
         }
       />

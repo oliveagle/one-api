@@ -22,4 +22,6 @@ const (
 	KeyRequestBody    = "key_request_body"
 	SystemPrompt      = "system_prompt"
 	Headers           = "headers"
+	SessionKey        = "session_key"
+	SessionSource     = "session_source"
 )

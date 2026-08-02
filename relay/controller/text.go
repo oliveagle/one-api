@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/songquanpeng/one-api/common/config"
+	"github.com/songquanpeng/one-api/common/ctxkey"
 	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/relay"
 	"github.com/songquanpeng/one-api/relay/adaptor"
@@ -73,6 +74,15 @@ func RelayTextHelper(c *gin.Context) *model.ErrorWithStatusCode {
 	if isErrorHappened(meta, resp) {
 		billing.ReturnPreConsumedQuota(ctx, preConsumedQuota, meta.TokenId)
 		return RelayErrorHandler(resp)
+	}
+
+	// set routing headers before response so client can see which channel/model was used
+	channelName := c.GetString(ctxkey.ChannelName)
+	if channelName != "" {
+		c.Writer.Header().Set("X-Oneapi-Channel", channelName)
+	}
+	if meta.ActualModelName != "" {
+		c.Writer.Header().Set("X-Oneapi-Model", meta.ActualModelName)
 	}
 
 	// do response

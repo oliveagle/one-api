@@ -117,5 +117,12 @@ func SetApiRouter(router *gin.Engine) {
 		{
 			groupRoute.GET("/", controller.GetGroups)
 		}
+		routingRoute := apiRouter.Group("/routing")
+		routingRoute.Use(middleware.AdminAuth())
+		{
+			routingRoute.GET("/status", controller.GetRoutingStatus)
+			routingRoute.DELETE("/session", controller.DeleteRoutingSession)
+			routingRoute.DELETE("/sessions", controller.ClearRoutingSessions)
+		}
 	}
 }
