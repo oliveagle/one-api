@@ -278,3 +278,78 @@ func TestDoRequest_ClosesBodies(t *testing.T) {
 		t.Fatalf("DoRequest with nil body: %v", err)
 	}
 }
+
+// SetupCommonRequestHeader must inject channel-configured custom headers.
+func TestSetupCommonRequestHeader_InjectsCustomHeaders(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	req, err := http.NewRequest(http.MethodPost, "http://upstream", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+
+	m := &meta.Meta{
+		IsStream: false,
+		Headers:  map[string]string{"User-Agent": "opencode", "X-Custom": "test-value"},
+	}
+	SetupCommonRequestHeader(c, req, m)
+
+	if got := req.Header.Get("User-Agent"); got != "opencode" {
+		t.Errorf("User-Agent = %q, want opencode", got)
+	}
+	if got := req.Header.Get("X-Custom"); got != "test-value" {
+		t.Errorf("X-Custom = %q, want test-value", got)
+	}
+}
+
+// Custom headers must override same-name headers set by the common setup.
+func TestSetupCommonRequestHeader_OverridesSameNameHeader(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Request.Header.Set("Accept", "text/event-stream")
+
+	req, err := http.NewRequest(http.MethodPost, "http://upstream", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+
+	// The channel configures Accept to something different — it should win.
+	m := &meta.Meta{
+		IsStream: true,
+		Headers:  map[string]string{"Accept": "application/json"},
+	}
+	SetupCommonRequestHeader(c, req, m)
+
+	if got := req.Header.Get("Accept"); got != "application/json" {
+		t.Errorf("Accept = %q, want application/json (channel override)", got)
+	}
+}
+
+// When no headers are configured (nil map), nothing extra is injected.
+func TestSetupCommonRequestHeader_NilHeadersNoInjection(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	req, err := http.NewRequest(http.MethodPost, "http://upstream", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+
+	m := &meta.Meta{IsStream: false, Headers: nil}
+	SetupCommonRequestHeader(c, req, m)
+
+	// No custom headers should have been added.
+	if got := req.Header.Get("User-Agent"); got != "" {
+		t.Errorf("User-Agent = %q, want empty (no injection)", got)
+	}
+	if got := req.Header.Get("X-Custom"); got != "" {
+		t.Errorf("X-Custom = %q, want empty (no injection)", got)
+	}
+}
