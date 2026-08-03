@@ -1,0 +1,17 @@
+version: '3.4'
+
+services:
+  one-api:
+    image: justsong/one-api:latest
+    container_name: one-api
+    restart: always
+    command: --log-dir /app/logs
+    ports:
+      - "0.0.0.0:3793:3000"
+    volumes:
+      - /mnt/ssd_pool/data/one-api/data:/data
+      - /mnt/ssd_pool/data/one-api/logs:/app/logs
+    environment:
+      - SQLITE_PATH=/data/one-api.db
+      - SESSION_SECRET=***REMOVED***
+      - TZ=Asia/Shanghai
