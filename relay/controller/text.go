@@ -79,10 +79,10 @@ func RelayTextHelper(c *gin.Context) *model.ErrorWithStatusCode {
 	// set routing headers before response so client can see which channel/model was used
 	channelName := c.GetString(ctxkey.ChannelName)
 	if channelName != "" {
-		c.Writer.Header().Set("X-Oneapi-Channel", channelName)
+		c.Writer.Header().Set("X-Upstream-AI-Channel", channelName)
 	}
 	if meta.ActualModelName != "" {
-		c.Writer.Header().Set("X-Oneapi-Model", meta.ActualModelName)
+		c.Writer.Header().Set("X-Upstream-AI-Model", meta.ActualModelName)
 	}
 
 	// do response
