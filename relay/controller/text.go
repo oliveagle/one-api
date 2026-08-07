@@ -27,7 +27,7 @@ func RelayTextHelper(c *gin.Context) *model.ErrorWithStatusCode {
 	ctx := c.Request.Context()
 	meta := meta.GetByContext(c)
 	// get & validate textRequest
-	textRequest, err := getAndValidateTextRequest(c, meta.Mode)
+	textRequest, requestModified, err := getAndValidateTextRequest(c, meta.Mode)
 	if err != nil {
 		logger.Errorf(ctx, "getAndValidateTextRequest failed: %s", err.Error())
 		return openai.ErrorWrapper(err, "invalid_text_request", http.StatusBadRequest)
@@ -60,7 +60,7 @@ func RelayTextHelper(c *gin.Context) *model.ErrorWithStatusCode {
 	adaptor.Init(meta)
 
 	// get request body
-	requestBody, err := getRequestBody(c, meta, textRequest, adaptor)
+	requestBody, err := getRequestBody(c, meta, textRequest, adaptor, requestModified)
 	if err != nil {
 		return openai.ErrorWrapper(err, "convert_request_failed", http.StatusInternalServerError)
 	}
@@ -88,7 +88,7 @@ func RelayTextHelper(c *gin.Context) *model.ErrorWithStatusCode {
 	// do response
 	usage, respErr := adaptor.DoResponse(c, resp, meta)
 	if respErr != nil {
-		logger.Errorf(ctx, "respErr is not nil: %+v", respErr)
+		logger.Errorf(ctx, "respErr is not nil: %+v", *respErr)
 		billing.ReturnPreConsumedQuota(ctx, preConsumedQuota, meta.TokenId)
 		return respErr
 	}
@@ -97,12 +97,19 @@ func RelayTextHelper(c *gin.Context) *model.ErrorWithStatusCode {
 	return nil
 }
 
-func getRequestBody(c *gin.Context, meta *meta.Meta, textRequest *model.GeneralOpenAIRequest, adaptor adaptor.Adaptor) (io.Reader, error) {
+func getRequestBody(c *gin.Context, meta *meta.Meta, textRequest *model.GeneralOpenAIRequest, adaptor adaptor.Adaptor, requestModified bool) (io.Reader, error) {
 	// Normalize tool_choice "any" (non-standard extension) to "required"
 	// so that strict upstreams like codex API do not reject it.
 	needConvert := false
 	if tc, ok := textRequest.ToolChoice.(string); ok && tc == "any" {
 		textRequest.ToolChoice = "required"
+		needConvert = true
+	}
+
+	// If the request body was modified in-memory (e.g. orphaned tool calls repaired,
+	// tool call arguments normalized), we must re-serialize from the struct instead
+	// of passing through the original raw body.
+	if requestModified {
 		needConvert = true
 	}
 

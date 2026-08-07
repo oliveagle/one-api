@@ -10,11 +10,12 @@ import "encoding/json"
 // (dashscope, volc, minimax, ollama, ...) rejects that with a 400, so one-api
 // normalises once at the ingress so all upstreams work.
 //
-// Existing string values are left untouched; nil is left as-is.
-func (r *GeneralOpenAIRequest) NormalizeToolCallArguments() {
+// Returns true if any arguments were modified.
+func (r *GeneralOpenAIRequest) NormalizeToolCallArguments() bool {
 	if r == nil {
-		return
+		return false
 	}
+	modified := false
 	for i := range r.Messages {
 		msg := &r.Messages[i]
 		for j := range msg.ToolCalls {
@@ -25,10 +26,12 @@ func (r *GeneralOpenAIRequest) NormalizeToolCallArguments() {
 			default:
 				if b, err := json.Marshal(args); err == nil {
 					msg.ToolCalls[j].Function.Arguments = string(b)
+					modified = true
 				}
 			}
 		}
 	}
+	return modified
 }
 
 // RepairOrphanedToolCalls fixes conversation histories where an assistant
@@ -43,11 +46,14 @@ func (r *GeneralOpenAIRequest) NormalizeToolCallArguments() {
 // The synthetic response has content "Tool execution was not recorded" so the
 // upstream accepts the request while the model understands the tool was not
 // actually executed.
-func (r *GeneralOpenAIRequest) RepairOrphanedToolCalls() {
+//
+// Returns true if any synthetic tool responses were inserted.
+func (r *GeneralOpenAIRequest) RepairOrphanedToolCalls() bool {
 	if r == nil || len(r.Messages) == 0 {
-		return
+		return false
 	}
 
+	modified := false
 	repaired := make([]Message, 0, len(r.Messages))
 	i := 0
 
@@ -90,6 +96,7 @@ func (r *GeneralOpenAIRequest) RepairOrphanedToolCalls() {
 						ToolCallId: id,
 					}
 					repaired = append(repaired, syntheticToolMsg)
+					modified = true
 				}
 			}
 
@@ -100,5 +107,8 @@ func (r *GeneralOpenAIRequest) RepairOrphanedToolCalls() {
 		i++
 	}
 
-	r.Messages = repaired
+	if modified {
+		r.Messages = repaired
+	}
+	return modified
 }
