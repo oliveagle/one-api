@@ -53,3 +53,186 @@ func TestNormalizeToolCallArguments(t *testing.T) {
 		t.Fatalf("call_3 expected nil, got %#v", calls[2].Function.Arguments)
 	}
 }
+
+func TestRepairOrphanedToolCalls(t *testing.T) {
+	tests := []struct {
+		name           string
+		input          []Message
+		expectedLen    int
+		expectedRoles  []string
+	}{
+		{
+			name: "no orphaned calls - all responses present",
+			input: []Message{
+				{Role: "user", Content: "hi"},
+				{Role: "assistant", ToolCalls: []Tool{
+					{Id: "call_1", Function: Function{Name: "test"}},
+				}},
+				{Role: "tool", ToolCallId: "call_1", Content: "result"},
+			},
+			expectedLen:    3,
+			expectedRoles:  []string{"user", "assistant", "tool"},
+		},
+		{
+			name: "orphaned call - missing tool response",
+			input: []Message{
+				{Role: "user", Content: "hi"},
+				{Role: "assistant", ToolCalls: []Tool{
+					{Id: "call_1", Function: Function{Name: "test"}},
+				}},
+			},
+			expectedLen:    3,
+			expectedRoles:  []string{"user", "assistant", "tool"},
+		},
+		{
+			name: "multiple orphaned calls in one assistant message",
+			input: []Message{
+				{Role: "user", Content: "hi"},
+				{Role: "assistant", ToolCalls: []Tool{
+					{Id: "call_1", Function: Function{Name: "test1"}},
+					{Id: "call_2", Function: Function{Name: "test2"}},
+					{Id: "call_3", Function: Function{Name: "test3"}},
+				}},
+			},
+			expectedLen:    5,
+			expectedRoles:  []string{"user", "assistant", "tool", "tool", "tool"},
+		},
+		{
+			name: "partial responses - some orphaned",
+			input: []Message{
+				{Role: "user", Content: "hi"},
+				{Role: "assistant", ToolCalls: []Tool{
+					{Id: "call_1", Function: Function{Name: "test1"}},
+					{Id: "call_2", Function: Function{Name: "test2"}},
+				}},
+				{Role: "tool", ToolCallId: "call_1", Content: "result1"},
+			},
+			expectedLen:    4,
+			expectedRoles:  []string{"user", "assistant", "tool", "tool"},
+		},
+		{
+			name: "multiple assistant messages with tool calls",
+			input: []Message{
+				{Role: "user", Content: "hi"},
+				{Role: "assistant", ToolCalls: []Tool{
+					{Id: "call_1", Function: Function{Name: "test1"}},
+				}},
+				{Role: "tool", ToolCallId: "call_1", Content: "result1"},
+				{Role: "assistant", ToolCalls: []Tool{
+					{Id: "call_2", Function: Function{Name: "test2"}},
+				}},
+			},
+			expectedLen:    5,
+			expectedRoles:  []string{"user", "assistant", "tool", "assistant", "tool"},
+		},
+		{
+			name: "assistant without tool calls - no repair needed",
+			input: []Message{
+				{Role: "user", Content: "hi"},
+				{Role: "assistant", Content: "hello"},
+			},
+			expectedLen:    2,
+			expectedRoles:  []string{"user", "assistant"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := &GeneralOpenAIRequest{
+				Model:    "test-model",
+				Messages: tt.input,
+			}
+
+			req.RepairOrphanedToolCalls()
+
+			if len(req.Messages) != tt.expectedLen {
+				t.Errorf("expected %d messages, got %d", tt.expectedLen, len(req.Messages))
+			}
+
+			for i, msg := range req.Messages {
+				if i >= len(tt.expectedRoles) {
+					break
+				}
+				if msg.Role != tt.expectedRoles[i] {
+					t.Errorf("message %d: expected role %s, got %s", i, tt.expectedRoles[i], msg.Role)
+				}
+				// Check synthetic tool responses have the expected content
+				if msg.Role == "tool" && msg.Content == "Tool execution was not recorded" {
+					// This is a synthetic response, verify it has a tool_call_id
+					if msg.ToolCallId == "" {
+						t.Errorf("synthetic tool response at index %d has empty tool_call_id", i)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestRepairOrphanedToolCalls_NilRequest(t *testing.T) {
+	var req *GeneralOpenAIRequest
+	// Should not panic
+	req.RepairOrphanedToolCalls()
+}
+
+func TestRepairOrphanedToolCalls_EmptyMessages(t *testing.T) {
+	req := &GeneralOpenAIRequest{
+		Model:    "test-model",
+		Messages: []Message{},
+	}
+	req.RepairOrphanedToolCalls()
+	if len(req.Messages) != 0 {
+		t.Errorf("expected 0 messages, got %d", len(req.Messages))
+	}
+}
+
+func TestRepairOrphanedToolCalls_IntegrationWithNormalize(t *testing.T) {
+	// Test that both functions work together
+	raw := `{
+		"model": "test-model",
+		"messages": [
+			{"role": "user", "content": "hi"},
+			{"role": "assistant", "tool_calls": [
+				{"id": "call_1", "type": "function", "function": {"name": "test", "arguments": {"arg": "value"}}},
+				{"id": "call_2", "type": "function", "function": {"name": "test2", "arguments": "already-string"}}
+			]}
+		]
+	}`
+
+	var req GeneralOpenAIRequest
+	if err := json.Unmarshal([]byte(raw), &req); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	// Apply both transformations
+	req.NormalizeToolCallArguments()
+	req.RepairOrphanedToolCalls()
+
+	// Should have 4 messages: user, assistant, tool, tool
+	if len(req.Messages) != 4 {
+		t.Fatalf("expected 4 messages, got %d", len(req.Messages))
+	}
+
+	// Verify tool responses were added
+	if req.Messages[2].Role != "tool" || req.Messages[2].ToolCallId != "call_1" {
+		t.Errorf("message 2: expected tool response for call_1, got role=%s tool_call_id=%s", 
+			req.Messages[2].Role, req.Messages[2].ToolCallId)
+	}
+	if req.Messages[3].Role != "tool" || req.Messages[3].ToolCallId != "call_2" {
+		t.Errorf("message 3: expected tool response for call_2, got role=%s tool_call_id=%s", 
+			req.Messages[3].Role, req.Messages[3].ToolCallId)
+	}
+
+	// Verify arguments were normalized
+	calls := req.Messages[1].ToolCalls
+	if s, ok := calls[0].Function.Arguments.(string); !ok {
+		t.Errorf("call_1 arguments not normalized to string: %T", calls[0].Function.Arguments)
+	} else {
+		var m map[string]any
+		if err := json.Unmarshal([]byte(s), &m); err != nil {
+			t.Errorf("call_1 arguments not valid JSON: %v", err)
+		}
+	}
+	if s, ok := calls[1].Function.Arguments.(string); !ok || s != "already-string" {
+		t.Errorf("call_2 arguments not preserved: %#v", calls[1].Function.Arguments)
+	}
+}
