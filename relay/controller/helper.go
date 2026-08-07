@@ -27,6 +27,7 @@ import (
 )
 
 func getAndValidateTextRequest(c *gin.Context, relayMode int) (*relaymodel.GeneralOpenAIRequest, bool, error) {
+	ctx := c.Request.Context()
 	textRequest := &relaymodel.GeneralOpenAIRequest{}
 	err := common.UnmarshalBodyReusable(c, textRequest)
 	if err != nil {
@@ -43,9 +44,11 @@ func getAndValidateTextRequest(c *gin.Context, relayMode int) (*relaymodel.Gener
 		// codex-cli 0.142 chat emitter sends function.arguments as a JSON object;
 		// the spec (and every upstream) requires a string. Normalise once here.
 		if textRequest.NormalizeToolCallArguments() {
+			logger.Infof(ctx, "normalized tool call arguments from object to string")
 			modified = true
 		}
 		if textRequest.RepairOrphanedToolCalls() {
+			logger.Infof(ctx, "repaired orphaned tool calls - inserted synthetic tool responses")
 			modified = true
 		}
 	}
