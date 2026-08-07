@@ -1,7 +1,13 @@
 package monitor
 
 import (
+	"context"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
+
 	"github.com/songquanpeng/one-api/common/config"
+	"github.com/songquanpeng/one-api/common/observability"
 )
 
 var store = make(map[int][]bool)
@@ -13,6 +19,15 @@ func consumeSuccess(channelId int) {
 		store[channelId] = store[channelId][1:]
 	}
 	store[channelId] = append(store[channelId], true)
+}
+
+func emitChannelSuccessRate(channelId int, rate float64) {
+	if observability.ChannelSuccessRate == nil {
+		return
+	}
+	observability.ChannelSuccessRate.Record(context.Background(), rate,
+		metric.WithAttributes(attribute.Int("channel.id", channelId)),
+	)
 }
 
 func consumeFail(channelId int) (bool, float64) {
@@ -27,6 +42,7 @@ func consumeFail(channelId int) (bool, float64) {
 		}
 	}
 	successRate := float64(successCount) / float64(len(store[channelId]))
+	emitChannelSuccessRate(channelId, successRate)
 	if len(store[channelId]) < config.MetricQueueSize {
 		return false, successRate
 	}
