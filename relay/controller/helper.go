@@ -42,6 +42,7 @@ func getAndValidateTextRequest(c *gin.Context, relayMode int) (*relaymodel.Gener
 		// codex-cli 0.142 chat emitter sends function.arguments as a JSON object;
 		// the spec (and every upstream) requires a string. Normalise once here.
 		textRequest.NormalizeToolCallArguments()
+		textRequest.RepairOrphanedToolCalls()
 	}
 	err = validator.ValidateTextRequest(textRequest, relayMode)
 	if err != nil {
