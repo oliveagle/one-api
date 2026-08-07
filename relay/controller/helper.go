@@ -26,11 +26,11 @@ import (
 	"github.com/songquanpeng/one-api/relay/relaymode"
 )
 
-func getAndValidateTextRequest(c *gin.Context, relayMode int) (*relaymodel.GeneralOpenAIRequest, error) {
+func getAndValidateTextRequest(c *gin.Context, relayMode int) (*relaymodel.GeneralOpenAIRequest, bool, error) {
 	textRequest := &relaymodel.GeneralOpenAIRequest{}
 	err := common.UnmarshalBodyReusable(c, textRequest)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if relayMode == relaymode.Moderations && textRequest.Model == "" {
 		textRequest.Model = "text-moderation-latest"
@@ -38,17 +38,22 @@ func getAndValidateTextRequest(c *gin.Context, relayMode int) (*relaymodel.Gener
 	if relayMode == relaymode.Embeddings && textRequest.Model == "" {
 		textRequest.Model = c.Param("model")
 	}
+	modified := false
 	if relayMode == relaymode.ChatCompletions {
 		// codex-cli 0.142 chat emitter sends function.arguments as a JSON object;
 		// the spec (and every upstream) requires a string. Normalise once here.
-		textRequest.NormalizeToolCallArguments()
-		textRequest.RepairOrphanedToolCalls()
+		if textRequest.NormalizeToolCallArguments() {
+			modified = true
+		}
+		if textRequest.RepairOrphanedToolCalls() {
+			modified = true
+		}
 	}
 	err = validator.ValidateTextRequest(textRequest, relayMode)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return textRequest, nil
+	return textRequest, modified, nil
 }
 
 func getPromptTokens(textRequest *relaymodel.GeneralOpenAIRequest, relayMode int) int {
@@ -64,11 +69,11 @@ func getPromptTokens(textRequest *relaymodel.GeneralOpenAIRequest, relayMode int
 }
 
 func getPreConsumedQuota(textRequest *relaymodel.GeneralOpenAIRequest, promptTokens int, ratio float64) int64 {
-	preConsumedTokens := config.PreConsumedQuota + int64(promptTokens)
+	preConsumedQuota := config.PreConsumedQuota + int64(promptTokens)
 	if textRequest.MaxTokens != 0 {
-		preConsumedTokens += int64(textRequest.MaxTokens)
+		preConsumedQuota += int64(textRequest.MaxTokens)
 	}
-	return int64(float64(preConsumedTokens) * ratio)
+	return int64(float64(preConsumedQuota) * ratio)
 }
 
 func preConsumeQuota(ctx context.Context, textRequest *relaymodel.GeneralOpenAIRequest, promptTokens int, ratio float64, meta *meta.Meta) (int64, *relaymodel.ErrorWithStatusCode) {
