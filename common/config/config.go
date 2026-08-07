@@ -158,6 +158,15 @@ var GeminiVersion = env.String("GEMINI_VERSION", "v1")
 
 var OnlyOneLogFile = env.Bool("ONLY_ONE_LOG_FILE", false)
 
+// OpenTelemetry 配置
+var OtelEnabled = env.Bool("OTEL_ENABLED", false)
+var OtelServiceName = env.String("OTEL_SERVICE_NAME", "one-api")
+var OtelEndpoint = env.String("OTEL_ENDPOINT", "127.0.0.1:4317")
+var OtelInsecure = env.Bool("OTEL_INSECURE", true)
+var OtelTracesEnabled = env.Bool("OTEL_TRACES_ENABLED", true)
+var OtelMetricsEnabled = env.Bool("OTEL_METRICS_ENABLED", true)
+var OtelLogsEnabled = env.Bool("OTEL_LOGS_ENABLED", true)
+
 var RelayProxy = env.String("RELAY_PROXY", "")
 var UserContentRequestProxy = env.String("USER_CONTENT_REQUEST_PROXY", "")
 var UserContentRequestTimeout = env.Int("USER_CONTENT_REQUEST_TIMEOUT", 30)

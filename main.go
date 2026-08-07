@@ -19,6 +19,7 @@ import (
 	"github.com/songquanpeng/one-api/controller"
 	"github.com/songquanpeng/one-api/middleware"
 	"github.com/songquanpeng/one-api/model"
+	"github.com/songquanpeng/one-api/common/observability"
 	"github.com/songquanpeng/one-api/relay/adaptor/openai"
 	"github.com/songquanpeng/one-api/router"
 )
@@ -28,6 +29,8 @@ var buildFS embed.FS
 
 func main() {
 	common.Init()
+	observability.Init()
+	defer observability.Shutdown()
 	logger.SetupLogger()
 	logger.SysLogf("One API %s started", common.Version)
 
@@ -111,6 +114,10 @@ func main() {
 	store := cookie.NewStore([]byte(config.SessionSecret))
 	server.Use(sessions.Sessions("session", store))
 
+	// 注册 OTel middleware（必须在 router.SetRouter 之前）
+	if config.OtelEnabled {
+		server.Use(middleware.OTelMiddleware())
+	}
 	router.SetRouter(server, buildFS)
 	var port = os.Getenv("PORT")
 	if port == "" {

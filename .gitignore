@@ -18,3 +18,8 @@ temp
 # Agent / task tracker state (managed out of band by bitx-loop)
 .beads/
 .bitx/nas-deploy/__pycache__/
+
+# Tool index / agent state (managed out of band)
+.bitx/
+.codegraph/
+__pycache__/

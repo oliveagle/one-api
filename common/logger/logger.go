@@ -16,6 +16,7 @@ import (
 
 	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/helper"
+	"github.com/songquanpeng/one-api/common/observability"
 )
 
 type loggerLevel string
@@ -135,6 +136,8 @@ func logHelper(ctx context.Context, level loggerLevel, msg string) {
 	now := time.Now()
 	_, _ = fmt.Fprintf(writer, "[%s] %v%s%s %s%s \n", level, now.Format("2006/01/02 - 15:04:05"), requestId, lineInfo, funcName, msg)
 	SetupLogger()
+	// 同步导出到 OTel log exporter（OTEL_ENABLED 时才有效，内部自带 nil 检查）
+	observability.EmitLog(ctx, string(level), msg)
 	if level == loggerFatal {
 		os.Exit(1)
 	}
