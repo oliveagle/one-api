@@ -51,6 +51,14 @@ func getAndValidateTextRequest(c *gin.Context, relayMode int) (*relaymodel.Gener
 			logger.Infof(ctx, "repaired orphaned tool calls - inserted synthetic tool responses")
 			modified = true
 		}
+		// Thinking/reasoning upstreams (opencode-go, zhipu GLM-5.2, ...) require
+		// every thinking-mode assistant message (tool_calls + empty content) to
+		// carry a reasoning_content back to the API. The codex chat emitter drops
+		// it, so inject a placeholder on the missing turns.
+		if textRequest.NormalizeReasoningContent() {
+			logger.Infof(ctx, "injected reasoning_content into thinking-mode assistant messages")
+			modified = true
+		}
 	}
 	err = validator.ValidateTextRequest(textRequest, relayMode)
 	if err != nil {

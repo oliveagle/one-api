@@ -112,3 +112,44 @@ func (r *GeneralOpenAIRequest) RepairOrphanedToolCalls() bool {
 	}
 	return modified
 }
+
+// ReasoningContentPlaceholder is injected into assistant messages that made
+// tool calls but were emitted without a `reasoning_content` field.
+//
+// Background: thinking/reasoning-capable upstreams (DeepSeek-V4-Flash on
+// Console Go / opencode-go, GLM-5.2, etc.) require that every "thinking mode"
+// assistant message carry a `reasoning_content` back to the API. A thinking
+// turn is an assistant message whose content is empty and which issued
+// tool_calls. When a client (e.g. the codex-cli chat emitter) drops the
+// reasoning_content for such a turn, the upstream rejects the whole request
+// with:
+//   invalid_request_error: The `reasoning_content` in the thinking mode must
+//   be passed back to the API.
+//
+// We cannot recover the original hidden reasoning, so we inject a stable
+// placeholder. Verified against opencode-go, zhipu GLM-5.2, xiaomi, volc and
+// minimax: all accept the placeholder, and only *missing* reasoning_content
+// is the trigger for the 400 (present-but-arbitrary is fine).
+const ReasoningContentPlaceholder = "Tool execution in progress"
+
+// NormalizeReasoningContent ensures every thinking-mode assistant message
+// (one that carries tool_calls and an empty content) includes a
+// `reasoning_content` field. Returns true if any message was modified.
+func (r *GeneralOpenAIRequest) NormalizeReasoningContent() bool {
+	if r == nil {
+		return false
+	}
+	modified := false
+	for i := range r.Messages {
+		msg := &r.Messages[i]
+		if msg.Role != "assistant" || len(msg.ToolCalls) == 0 {
+			continue
+		}
+		hasReasoning := msg.ReasoningContent != nil
+		if !hasReasoning {
+			msg.ReasoningContent = ReasoningContentPlaceholder
+			modified = true
+		}
+	}
+	return modified
+}
