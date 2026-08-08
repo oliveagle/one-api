@@ -236,3 +236,44 @@ func TestRepairOrphanedToolCalls_IntegrationWithNormalize(t *testing.T) {
 		t.Errorf("call_2 arguments not preserved: %#v", calls[1].Function.Arguments)
 	}
 }
+
+func TestNormalizeReasoningContent(t *testing.T) {
+	raw := `{
+		"model": "coding_medium",
+		"messages": [
+			{"role": "user", "content": "hi"},
+			{"role": "assistant", "content": "", "reasoning_content": "kept", "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "f", "arguments": "{}"}}]},
+			{"role": "tool", "tool_call_id": "c1", "content": "r"},
+			{"role": "assistant", "content": "", "tool_calls": [{"id": "c2", "type": "function", "function": {"name": "f", "arguments": "{}"}}]},
+			{"role": "tool", "tool_call_id": "c2", "content": "r"},
+			{"role": "assistant", "content": "plain answer"}
+		]
+	}`
+	var req GeneralOpenAIRequest
+	if err := json.Unmarshal([]byte(raw), &req); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	modified := req.NormalizeReasoningContent()
+	if !modified {
+		t.Fatalf("expected modified=true")
+	}
+
+	// msg[1]: had reasoning_content -> preserved
+	if req.Messages[1].ReasoningContent != "kept" {
+		t.Fatalf("existing reasoning_content not preserved: %#v", req.Messages[1].ReasoningContent)
+	}
+	// msg[3]: thinking turn without reasoning_content -> placeholder injected
+	if rc, ok := req.Messages[3].ReasoningContent.(string); !ok || rc != ReasoningContentPlaceholder {
+		t.Fatalf("missing reasoning_content not injected: %#v", req.Messages[3].ReasoningContent)
+	}
+	// msg[5]: assistant with content only (not a thinking turn) -> untouched
+	if req.Messages[5].ReasoningContent != nil {
+		t.Fatalf("plain assistant answer should not get reasoning_content: %#v", req.Messages[5].ReasoningContent)
+	}
+
+	// second call: already normalized -> no more modification
+	if req.NormalizeReasoningContent() {
+		t.Fatalf("expected no modification on second pass")
+	}
+}
