@@ -133,7 +133,7 @@ func TestGetAndValidateTextRequestDefaults(t *testing.T) {
 			if tc.param != "" {
 				c.Params = gin.Params{{Key: "model", Value: tc.param}}
 			}
-			r, err := getAndValidateTextRequest(c, tc.mode)
+			r, _, err := getAndValidateTextRequest(c, tc.mode)
 			if err != nil {
 				t.Fatalf("getAndValidateTextRequest: %v", err)
 			}
@@ -147,7 +147,7 @@ func TestGetAndValidateTextRequestDefaults(t *testing.T) {
 func TestGetAndValidateTextRequestRejectsInvalidJSON(t *testing.T) {
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader("{"))
-	if _, err := getAndValidateTextRequest(c, relaymode.ChatCompletions); err == nil {
+	if _, _, err := getAndValidateTextRequest(c, relaymode.ChatCompletions); err == nil {
 		t.Fatal("invalid JSON should return an error")
 	}
 }

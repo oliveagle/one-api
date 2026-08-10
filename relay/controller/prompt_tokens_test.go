@@ -30,7 +30,7 @@ func TestGetPromptTokens(t *testing.T) {
 			c, _ := gin.CreateTestContext(httptest.NewRecorder())
 			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(tc.body))
 			c.Request.Header.Set("Content-Type", "application/json")
-			r, err := getAndValidateTextRequest(c, tc.mode)
+			r, _, err := getAndValidateTextRequest(c, tc.mode)
 			if err != nil {
 				t.Fatalf("getAndValidateTextRequest: %v", err)
 			}
