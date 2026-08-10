@@ -98,12 +98,21 @@ func RelayTextHelper(c *gin.Context) *model.ErrorWithStatusCode {
 }
 
 func getRequestBody(c *gin.Context, meta *meta.Meta, textRequest *model.GeneralOpenAIRequest, adaptor adaptor.Adaptor, requestModified bool) (io.Reader, error) {
-	// Normalize tool_choice "any" (non-standard extension) to "required"
-	// so that strict upstreams like codex API do not reject it.
+	// Normalize tool_choice to a value strict upstreams (Console Go / opencode-go,
+	// codex API) accept. Those upstreams only accept the strings "none", "auto",
+	// "required" or an OpenAI tool choice object, and reject anything else with:
+	//   tool_choice: expected one of `none`, `auto`, `required` or a tool choice object
+	// codex-cli sends the non-standard "any" (and may send other non-standard
+	// strings); map any such value to "required" so the request is accepted.
 	needConvert := false
-	if tc, ok := textRequest.ToolChoice.(string); ok && tc == "any" {
-		textRequest.ToolChoice = "required"
-		needConvert = true
+	if tc, ok := textRequest.ToolChoice.(string); ok {
+		switch tc {
+		case "none", "auto", "required":
+			// already a valid value, leave untouched
+		default:
+			textRequest.ToolChoice = "required"
+			needConvert = true
+		}
 	}
 
 	// If the request body was modified in-memory (e.g. orphaned tool calls repaired,
