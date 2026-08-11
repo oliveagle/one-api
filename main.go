@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"embed"
 	"fmt"
 	"os"
@@ -44,6 +45,14 @@ func main() {
 	// Initialize SQL Database
 	model.InitDB()
 	model.InitLogDB()
+
+	// Auto-rotate DB logs to a rotated file under <log-dir>/db-logs/.
+	// Runs an initial sweep on startup, then every
+	// LOG_DB_ROTATION_INTERVAL_HOURS hours. Retention is governed by
+	// LOG_DB_RETENTION_DAYS (default 30). Default-on, no config needed.
+	rotateCtx, cancelRotate := context.WithCancel(context.Background())
+	defer cancelRotate()
+	model.StartDBLogRotator(rotateCtx, logger.LogDir)
 
 	var err error
 	err = model.CreateRootAccountIfNeed()
