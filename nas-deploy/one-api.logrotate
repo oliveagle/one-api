@@ -1,0 +1,27 @@
+# /etc/logrotate.d/one-api
+# Drop this file on Linux hosts (oleNucBoxEVOX2, oleNas01, oleOpenWrt_249)
+# that don't run one-api inside a managed supervisor / container. Log
+# rotation is also handled in-process by lumberjack (see logger.go) so this
+# file is only a safety net for cases where the process can't rotate on
+# its own (for example, when LOG_TO_STDOUT_ONLY=1 routes everything to
+# stdout and a supervisor like supervisord is redirecting stdout to a file).
+#
+# Usage:
+#   sudo cp one-api.logrotate /etc/logrotate.d/one-api
+#   sudo chmod 0644 /etc/logrotate.d/one-api
+#   logrotate -d /etc/logrotate.d/one-api   # dry-run
+#   logrotate -f /etc/logrotate.d/one-api   # force run
+#
+# Adjust the path below to match the install dir used on each host
+# (default: ~/opt/one-api/logs or /opt/one-api/logs).
+
+/Users/oliveagle/opt/one-api/logs/oneapi*.log /opt/one-api/logs/oneapi*.log {
+    daily
+    rotate 14
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+    create 0644 oliveagle oliveagle
+}
