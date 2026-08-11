@@ -13,8 +13,10 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"gopkg.in/natefinch/lumberjack.v2"
 
 	"github.com/songquanpeng/one-api/common/config"
+	"github.com/songquanpeng/one-api/common/env"
 	"github.com/songquanpeng/one-api/common/helper"
 	"github.com/songquanpeng/one-api/common/observability"
 )
@@ -29,25 +31,84 @@ const (
 	loggerFatal loggerLevel = "FATAL"
 )
 
+// default rotation parameters. These are tuned for a single-instance low-volume
+// service: keep ~7 daily files, rotate when they reach 100MB each, compress old
+// files. Override via env vars (LOG_MAX_SIZE_MB, LOG_MAX_AGE_DAYS,
+// LOG_MAX_BACKUPS, LOG_COMPRESS).
+const (
+	defaultLogMaxSizeMB  = 100
+	defaultLogMaxBackups = 7
+	defaultLogMaxAgeDays = 30
+	defaultLogCompress   = true
+)
+
+// setupLogOnce ensures the global writers are wired exactly once per process.
 var setupLogOnce sync.Once
 
+// activeFileWriter is the shared lumberjack-rotating writer used by both the
+// gin global writer and our internal helpers. Keeping a single instance means
+// every log line benefits from the same rotation policy.
+var activeFileWriter io.Writer
+
+// SetupLogger configures the global log writers. By default logs are written
+// to a rotating file under LogDir (default ./logs) AND to stdout/stderr. This
+// is the canonical behavior - no configuration is needed for files to be
+// produced and rotated. Set LOG_TO_STDOUT_ONLY=1 to disable file output and
+// keep logs going to the original stdout/stderr stream only.
 func SetupLogger() {
 	setupLogOnce.Do(func() {
-		if LogDir != "" {
-			var logPath string
-			if config.OnlyOneLogFile {
-				logPath = filepath.Join(LogDir, "oneapi.log")
-			} else {
-				logPath = filepath.Join(LogDir, fmt.Sprintf("oneapi-%s.log", time.Now().Format("20060102")))
-			}
-			fd, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-			if err != nil {
-				log.Fatal("failed to open log file")
-			}
-			gin.DefaultWriter = io.MultiWriter(os.Stdout, fd)
-			gin.DefaultErrorWriter = io.MultiWriter(os.Stderr, fd)
+		// Pick the directory we want logs in. LogDir is set by common.Init
+		// from --log-dir / LOG_DIR. If somehow empty, default to ./logs.
+		dir := LogDir
+		if dir == "" {
+			dir = "./logs"
+			LogDir = dir
 		}
+		// Make sure the directory exists. MkdirAll is safe to call multiple
+		// times and tolerates the directory already being present.
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			log.Printf("failed to create log dir %s: %v - falling back to stdout", dir, err)
+			// Leave gin writers pointed at stdout/stderr; nothing more to do.
+			return
+		}
+
+		// Build a lumberjack rotator. Compress old files to keep disk usage
+		// bounded, rotate by size, and keep a fixed window of backups.
+		rotator := &lumberjack.Logger{
+			Filename:   filepath.Join(dir, "oneapi.log"),
+			MaxSize:    env.Int("LOG_MAX_SIZE_MB", defaultLogMaxSizeMB),   // megabytes per file
+			MaxBackups: env.Int("LOG_MAX_BACKUPS", defaultLogMaxBackups), // number of rotated files to keep
+			MaxAge:     env.Int("LOG_MAX_AGE_DAYS", defaultLogMaxAgeDays), // days to keep rotated files
+			Compress:   env.Bool("LOG_COMPRESS", defaultLogCompress),     // gzip rotated files
+			LocalTime:  true,
+		}
+		activeFileWriter = rotator
+
+		// Decide whether stdout is still wanted alongside the file. The
+		// historical behavior (when --log-dir was set) was to keep stdout,
+		// so we preserve that. LOG_TO_STDOUT_ONLY=1 reverts to the
+		// pre-file behavior (stdout only) for users who explicitly want it.
+		toStdout := env.String("LOG_TO_STDOUT_ONLY", "")
+		if toStdout == "1" || strings.EqualFold(toStdout, "true") {
+			// File disabled by request. Keep gin defaults (stdout/stderr).
+			activeFileWriter = nil
+			return
+		}
+
+		// Wire gin writers to a MultiWriter of stdout + file for info, and
+		// stderr + file for errors. This way log lines still appear in
+		// `docker logs` / `journalctl` style setups while ALSO landing in a
+		// rotated file.
+		gin.DefaultWriter = io.MultiWriter(os.Stdout, rotator)
+		gin.DefaultErrorWriter = io.MultiWriter(os.Stderr, rotator)
 	})
+}
+
+// fileWriter returns the active rotating file writer, or nil if file output
+// is disabled. Tests can rely on this to assert on disk content without
+// depending on gin internals.
+func fileWriter() io.Writer {
+	return activeFileWriter
 }
 
 func SysLog(s string) {
@@ -135,6 +196,9 @@ func logHelper(ctx context.Context, level loggerLevel, msg string) {
 	lineInfo, funcName := getLineInfo()
 	now := time.Now()
 	_, _ = fmt.Fprintf(writer, "[%s] %v%s%s %s%s \n", level, now.Format("2006/01/02 - 15:04:05"), requestId, lineInfo, funcName, msg)
+	// Ensure SetupLogger() has run so an operator starting with a fresh
+	// process (or running just logHelper without going through main) still
+	// gets rotation configured.
 	SetupLogger()
 	// 同步导出到 OTel log exporter（OTEL_ENABLED 时才有效，内部自带 nil 检查）
 	observability.EmitLog(ctx, string(level), msg)
