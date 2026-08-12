@@ -629,8 +629,10 @@ func convertResponsesToChatCompletions(request *ResponsesRequest) (*relaymodel.G
 	ensureMessageIDs(ptrs)
 
 	return &relaymodel.GeneralOpenAIRequest{
-		Model:    request.Model,
-		Stream:   request.Stream,
-		Messages: messages,
+		Model:      request.Model,
+		Stream:     request.Stream,
+		Messages:   messages,
+		Tools:      request.Tools,
+		ToolChoice: request.ToolChoice,
 	}, nil
 }

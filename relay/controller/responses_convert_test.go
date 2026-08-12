@@ -1401,3 +1401,71 @@ func TestConvertResponsesToChatCompletions_UnsupportedItemType(t *testing.T) {
 		t.Fatalf("unexpected error for unknown item type: %v", err)
 	}
 }
+
+func TestConvertResponsesToChatCompletions_ToolsPropagated(t *testing.T) {
+	// Regression: previously the conversion discarded request.Tools, which made
+	// tool-using clients (codex CLI etc.) silently get a 400 from the upstream
+	// chat API complaining about a missing `tools.name`. See also
+	// TestResponsesRequestPreservesToolsField below for the input side.
+	tools := []model.Tool{{
+		Type: "function",
+		Function: model.Function{
+			Name:       "get_weather",
+			Parameters: map[string]any{"type": "object", "properties": map[string]any{}},
+		},
+	}}
+	toolChoice := "auto"
+	req := &ResponsesRequest{
+		Model:      "deepseek-v4-flash",
+		Stream:     false,
+		Input:      "what's the weather in Tokyo?",
+		Tools:      tools,
+		ToolChoice: toolChoice,
+	}
+	converted, err := convertResponsesToChatCompletions(req)
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	if len(converted.Tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(converted.Tools))
+	}
+	if converted.Tools[0].Function.Name != "get_weather" {
+		t.Errorf("tool name lost in conversion: %+v", converted.Tools[0])
+	}
+	if converted.ToolChoice != toolChoice {
+		t.Errorf("tool_choice lost in conversion: %v", converted.ToolChoice)
+	}
+}
+
+func TestResponsesRequestPreservesToolsField(t *testing.T) {
+	// The ResponsesRequest struct must keep the tools[] field on the wire —
+	// otherwise Go silently drops it during JSON unmarshal. Without this guard
+	// a refactor that strips the field from the struct would also silently
+	// break all tool-using clients.
+	body := []byte(`{
+		"model": "deepseek-v4-flash",
+		"input": "hi",
+		"tools": [{
+			"type": "function",
+			"function": {
+				"name": "f1",
+				"description": "d",
+				"parameters": {"type": "object", "properties": {}}
+			}
+		}],
+		"tool_choice": "auto"
+	}`)
+	var r ResponsesRequest
+	if err := json.Unmarshal(body, &r); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(r.Tools) != 1 {
+		t.Fatalf("Tools field not populated: got %d tools, want 1", len(r.Tools))
+	}
+	if r.Tools[0].Function.Name != "f1" {
+		t.Errorf("tool name not preserved: %+v", r.Tools[0])
+	}
+	if r.ToolChoice != "auto" {
+		t.Errorf("tool_choice not preserved: %v", r.ToolChoice)
+	}
+}
