@@ -125,6 +125,17 @@ func (a *Adaptor) DoRequest(c *gin.Context, meta *meta.Meta, requestBody io.Read
 		return newSSEResponse(synthesizeStreamChunks(modelName, cannedReply)), nil
 	case "openai-tool-call":
 		return newJSONResponse(http.StatusOK, synthesizeChatResponse(modelName, "", true)), nil
+	case "openai-responses":
+		// Native Responses API shape (object:"response", output[],
+		// usage with input_tokens/output_tokens). Used by the
+		// responses->responses passthrough test category. If the
+		// request asked for streaming, emit the Responses SSE shape.
+		if stream {
+			return newSSEResponse(synthesizeResponsesStream(modelName, cannedReply)), nil
+		}
+		return newJSONResponse(http.StatusOK, synthesizeResponsesResponse(modelName, cannedReply)), nil
+	case "openai-responses-stream":
+		return newSSEResponse(synthesizeResponsesStream(modelName, cannedReply)), nil
 	case "error-429":
 		return newJSONResponse(http.StatusTooManyRequests, synthesizeErrorBody("rate limited by mock", "rate_limit_exceeded")), nil
 	case "error-500":
@@ -327,6 +338,104 @@ func synthesizeErrorBody(message, errType string) []byte {
 	}
 	out, _ := json.Marshal(body)
 	return out
+}
+
+// synthesizeResponsesResponse builds an OpenAI Responses API (non-stream)
+// JSON body. The shape mirrors what relayResponsesNonStream decodes:
+//
+//	{"id":"resp_mock","object":"response",...,"status":"completed",
+//	 "output":[{"type":"message","role":"assistant",
+//	            "content":[{"type":"output_text","text":"..."}]}],
+//	 "usage":{"input_tokens":19,"output_tokens":7,"total_tokens":26}}
+//
+// Note the Responses usage field names are input_tokens/output_tokens,
+// NOT prompt_tokens/completion_tokens — the relay's ResponsesUsage.ToUsage
+// maps them onto the internal Usage struct for billing.
+func synthesizeResponsesResponse(modelName, text string) []byte {
+	body := map[string]any{
+		"id":      "resp_mock",
+		"object":  "response",
+		"created": 1700000000,
+		"model":   modelName,
+		"status":  "completed",
+		"output": []map[string]any{{
+			"type": "message",
+			"role": "assistant",
+			"content": []map[string]any{{
+				"type": "output_text",
+				"text": text,
+			}},
+		}},
+		"usage": map[string]any{
+			"input_tokens":  19,
+			"output_tokens": 7,
+			"total_tokens":  26,
+		},
+	}
+	out, _ := json.Marshal(body)
+	return out
+}
+
+// synthesizeResponsesStream builds an OpenAI Responses API SSE stream.
+// The Responses streaming protocol interleaves "event:" lines with
+// "data:" lines (unlike Chat Completions which is data-only). The relay
+// forwards frames verbatim and only scans data lines for a usage block
+// via usageFromSSELine, which accepts usage at the top level OR nested
+// under "response". We emit a response.completed frame carrying usage
+// at the end so billing settles correctly.
+//
+// Frame sequence (minimal but protocol-valid):
+//
+//	event: response.created
+//	data: {"type":"response.created","response":{"id":"resp_mock",...}}
+//	event: response.output_text.delta
+//	data: {"type":"response.output_text.delta","delta":"<text>"}
+//	event: response.completed
+//	data: {"type":"response.completed","response":{...,"usage":{...}}}
+//	data: [DONE]
+func synthesizeResponsesStream(modelName, text string) []byte {
+	var buf bytes.Buffer
+	writeFrame := func(event string, payload map[string]any) {
+		b, _ := json.Marshal(payload)
+		fmt.Fprintf(&buf, "event: %s\n", event)
+		fmt.Fprintf(&buf, "data: %s\n\n", b)
+	}
+
+	respSkeleton := map[string]any{
+		"id": "resp_mock", "object": "response",
+		"created": 1700000000, "model": modelName, "status": "in_progress",
+	}
+	// response.created
+	writeFrame("response.created", map[string]any{
+		"type":     "response.created",
+		"response": respSkeleton,
+	})
+	// output text delta
+	writeFrame("response.output_text.delta", map[string]any{
+		"type":  "response.output_text.delta",
+		"delta": text,
+	})
+	// response.completed — carries the final usage block the relay
+	// extracts for billing (usageFromSSELine matches response.usage).
+	completed := map[string]any{
+		"id": "resp_mock", "object": "response",
+		"created": 1700000000, "model": modelName, "status": "completed",
+		"output": []map[string]any{{
+			"type": "message", "role": "assistant",
+			"content": []map[string]any{{"type": "output_text", "text": text}},
+		}},
+		"usage": map[string]any{
+			"input_tokens":  19,
+			"output_tokens": 7,
+			"total_tokens":  26,
+		},
+	}
+	writeFrame("response.completed", map[string]any{
+		"type":     "response.completed",
+		"response": completed,
+	})
+	buf.WriteString("data: [DONE]\n\n")
+	return buf.Bytes()
 }
 
 // newJSONResponse assembles an *http.Response with a JSON body. The

@@ -10,6 +10,13 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+
+	"github.com/songquanpeng/one-api/common"
+	"github.com/songquanpeng/one-api/common/ctxkey"
+	"github.com/songquanpeng/one-api/model"
+	"github.com/songquanpeng/one-api/relay/channeltype"
+	"github.com/songquanpeng/one-api/relay/meta"
+	relaymodel "github.com/songquanpeng/one-api/relay/model"
 )
 
 func TestToUsage(t *testing.T) {
@@ -192,8 +199,6 @@ func TestRelayResponsesHelper_UnsupportedMethod(t *testing.T) {
 	}
 }
 
-
-
 func TestResponsesRequestJSON(t *testing.T) {
 	req := ResponsesRequest{
 		Model:        "gpt-4o",
@@ -278,5 +283,135 @@ func TestRelayResponsesPassthrough_BodyHandling(t *testing.T) {
 	data, _ := io.ReadAll(requestBody)
 	if string(data) != `{"cancel":true}` {
 		t.Errorf("body = %q", string(data))
+	}
+}
+
+func TestUpstreamSupportsResponses_ConfigFlag(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	m := &meta.Meta{Config: model.ChannelConfig{SupportResponses: true}}
+	if !upstreamSupportsResponses(m) {
+		t.Fatal("expected true when SupportResponses config is set")
+	}
+}
+
+func TestUpstreamSupportsResponses_AIHubMixDefault(t *testing.T) {
+	m := &meta.Meta{ChannelType: channeltype.AIHubMix}
+	if !upstreamSupportsResponses(m) {
+		t.Fatal("AIHubMix channel should support Responses by default")
+	}
+}
+
+func TestUpstreamSupportsResponses_OpenCodeDefault(t *testing.T) {
+	// A generic OpenAI-compatible channel (opencode-go) has no flag set and is
+	// not AIHubMix, so it must default to conversion.
+	m := &meta.Meta{ChannelType: channeltype.OpenAICompatible}
+	if upstreamSupportsResponses(m) {
+		t.Fatal("OpenAI-compatible channel should default to conversion")
+	}
+}
+
+func TestUpstreamSupportsResponses_NilMeta(t *testing.T) {
+	if upstreamSupportsResponses(nil) {
+		t.Fatal("nil meta should not support Responses")
+	}
+}
+
+func TestUpstreamSupportsResponses_ZeroValueMeta(t *testing.T) {
+	if upstreamSupportsResponses(&meta.Meta{}) {
+		t.Fatal("zero-value meta should default to conversion")
+	}
+}
+
+func TestRelayResponsesConvertToChat_DelegateToChatPipeline(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-4o","input":"hello"}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	// UnmarshalBodyReusable caches the body; simulate what relayResponsesCreate
+	// does before calling the conversion path.
+	var request ResponsesRequest
+	if err := common.UnmarshalBodyReusable(c, &request); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	// Convert without a real channel: the chat pipeline itself cannot run in a
+	// unit test (it needs a channel/DB), so exercise the conversion half, which
+	// returns the rewritten Chat Completions body.
+	convertedBody, err := convertResponsesRequestToChat(c, &request)
+	if err != nil {
+		t.Fatalf("convertResponsesRequestToChat: %v", err)
+	}
+
+	// The converted body must be well-formed Chat Completions JSON.
+	if len(convertedBody) == 0 {
+		t.Fatal("converted body is empty")
+	}
+	var chat relaymodel.GeneralOpenAIRequest
+	if err := json.Unmarshal(convertedBody, &chat); err != nil {
+		t.Fatalf("converted body is not valid JSON: %v", err)
+	}
+	if len(chat.Messages) == 0 {
+		t.Fatal("converted chat request has no messages")
+	}
+	if chat.Messages[0].Role != "user" {
+		t.Errorf("first message role = %q, want user", chat.Messages[0].Role)
+	}
+	if chat.Model != "gpt-4o" {
+		t.Errorf("model = %q, want gpt-4o", chat.Model)
+	}
+}
+
+func TestRelayResponsesConvertToChat_ErrorPropagates(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-4o"}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	var request ResponsesRequest
+	if err := common.UnmarshalBodyReusable(c, &request); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	// A request with neither input nor instructions converts to zero messages,
+	// which is not an error at the conversion layer; verify the returned body
+	// is valid JSON and no error is raised.
+	body, err := convertResponsesRequestToChat(c, &request)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var chat relaymodel.GeneralOpenAIRequest
+	if err := json.Unmarshal(body, &chat); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	_ = chat
+}
+
+func TestRelayResponsesConvertToChat_RestoresOriginalBodyAndPath(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-4o","input":"hello"}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	var request ResponsesRequest
+	if err := common.UnmarshalBodyReusable(c, &request); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	originalBody, _ := common.GetRequestBody(c)
+
+	if _, err := convertResponsesRequestToChat(c, &request); err != nil {
+		t.Fatalf("convertResponsesRequestToChat: %v", err)
+	}
+
+	// After the deferred restore, the cached body and path are back to the
+	// original Responses request.
+	cached, _ := c.Get(ctxkey.KeyRequestBody)
+	if !bytes.Equal(cached.([]byte), originalBody) {
+		t.Error("cached request body was not restored after conversion")
+	}
+	if c.Request.URL.Path != "/v1/responses" {
+		t.Errorf("request path = %q, want /v1/responses", c.Request.URL.Path)
 	}
 }
