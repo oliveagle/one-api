@@ -41,6 +41,38 @@ func bodyString(t *testing.T, resp *http.Response) string {
 	return string(b)
 }
 
+// reassembleContentDeltas extracts every "content" value from the SSE
+// chat-completion chunks in body and concatenates them, mirroring what
+// the OpenAI StreamHandler does in production. Used to verify that
+// multi-chunk streaming reconstructs the original text.
+func reassembleContentDeltas(body string) string {
+	var out strings.Builder
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		payload := strings.TrimPrefix(line, "data: ")
+		if payload == "[DONE]" {
+			continue
+		}
+		var chunk struct {
+			Choices []struct {
+				Delta struct {
+					Content string `json:"content"`
+				} `json:"delta"`
+			} `json:"choices"`
+		}
+		if json.Unmarshal([]byte(payload), &chunk) != nil {
+			continue
+		}
+		for _, c := range chunk.Choices {
+			out.WriteString(c.Delta.Content)
+		}
+	}
+	return out.String()
+}
+
 func TestDoRequest_NonStreamChat(t *testing.T) {
 	c := newCtxWithBehavior(t, "openai-chat",
 		`{"model":"mock-gpt-4o","messages":[{"role":"user","content":"hi"}]}`)
@@ -119,9 +151,13 @@ func TestDoRequest_ForceStreamBehavior(t *testing.T) {
 		t.Fatalf("Content-Type = %q, want text/event-stream", ct)
 	}
 	body := bodyString(t, resp)
+	// Content is now split across multiple delta chunks (mirrors real
+	// token-by-token streaming). Assert on the first chunk + the
+	// structural markers, not on a single full-content chunk.
 	for _, want := range []string{
 		`"role":"assistant"`,
-		`"content":"` + cannedReply + `"`,
+		`"content":"Hello"`, // first delta chunk
+		`"content":" from"`, // second delta chunk (space-prefixed)
 		`"finish_reason":"stop"`,
 		`"total_tokens":21`,
 		"[DONE]",
@@ -129,6 +165,11 @@ func TestDoRequest_ForceStreamBehavior(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("stream body missing %q:\n%s", want, body)
 		}
+	}
+	// Verify the full canned reply is recoverable by concatenating all
+	// content deltas (this is what the OpenAI StreamHandler does).
+	if !strings.Contains(reassembleContentDeltas(body), cannedReply) {
+		t.Errorf("concatenated content deltas do not reconstruct the canned reply:\ngot: %s", reassembleContentDeltas(body))
 	}
 }
 
@@ -193,18 +234,31 @@ func TestDoRequest_ResponsesStreamForced(t *testing.T) {
 	}
 	body := bodyString(t, resp)
 	// Responses SSE carries event: lines alongside data: lines.
+	// Assert the COMPLETE official event sequence is present (see
+	// synthesizeResponsesStream doc comment for the full list).
 	for _, want := range []string{
 		"event: response.created",
+		"event: response.in_progress",
+		"event: response.output_item.added",
+		"event: response.content_part.added",
 		"event: response.output_text.delta",
+		"event: response.output_text.done",
+		"event: response.content_part.done",
+		"event: response.output_item.done",
 		"event: response.completed",
 		`"type":"response.completed"`,
 		`"input_tokens":19`,
 		"[DONE]",
-		cannedReply,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("responses stream body missing %q:\n%s", want, body)
 		}
+	}
+	// Multiple delta chunks should be present (content split across
+	// chunks, not a single blob).
+	deltaCount := strings.Count(body, "event: response.output_text.delta")
+	if deltaCount < 2 {
+		t.Errorf("expected >=2 output_text.delta events (multi-chunk), got %d:\n%s", deltaCount, body)
 	}
 }
 
@@ -224,6 +278,38 @@ func TestDoRequest_ResponsesStreamFlagInBody(t *testing.T) {
 	body := bodyString(t, resp)
 	if !strings.Contains(body, "event: response.completed") {
 		t.Errorf("stream body missing response.completed event:\n%s", body)
+	}
+}
+
+func TestDoRequest_ResponsesToolCall(t *testing.T) {
+	// Responses API with a function_call output item (not a message).
+	c := newCtxWithBehavior(t, "openai-responses-tool-call", `{}`)
+	a := &Adaptor{}
+	resp, err := a.DoRequest(c, nil, strings.NewReader(`{"model":"mock-gpt-4o"}`))
+	if err != nil {
+		t.Fatalf("DoRequest: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	body := bodyString(t, resp)
+	// function_call output shape markers
+	for _, want := range []string{
+		`"object":"response"`,
+		`"type":"function_call"`,
+		`"name":"get_weather"`,
+		`"call_id":"call_mock"`,
+		`"arguments"`,
+		`"status":"completed"`,
+		`"input_tokens":19`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("responses tool-call body missing %q:\n%s", want, body)
+		}
+	}
+	// Must NOT contain a message output (that's the text-response shape).
+	if strings.Contains(body, `"type":"message"`) {
+		t.Errorf("tool-call response should not contain a message output:\n%s", body)
 	}
 }
 
@@ -253,6 +339,8 @@ func TestDoRequest_ErrorStatuses(t *testing.T) {
 				Error struct {
 					Message string `json:"message"`
 					Type    string `json:"type"`
+					Code    string `json:"code"`
+					Param   any    `json:"param"`
 				} `json:"error"`
 			}
 			if err := json.Unmarshal([]byte(body), &env); err != nil {
@@ -263,6 +351,11 @@ func TestDoRequest_ErrorStatuses(t *testing.T) {
 			}
 			if env.Error.Message == "" {
 				t.Errorf("error.message empty in body: %s", body)
+			}
+			// The code field must be a non-empty machine-readable
+			// string that clients switch on (not null/empty).
+			if env.Error.Code == "" {
+				t.Errorf("error.code empty in body (should be a descriptive string): %s", body)
 			}
 		})
 	}

@@ -246,6 +246,39 @@ func basicChatBody(mods ...map[string]any) string {
 	return string(b)
 }
 
+// reassembleChatStreamContent extracts every choice.delta.content from
+// the SSE chat-completion chunks in body and concatenates them. This
+// mirrors what the OpenAI StreamHandler does in production and lets
+// tests assert on the reconstructed text even though the mock now splits
+// content across multiple delta chunks (token-by-token streaming).
+func reassembleChatStreamContent(body string) string {
+	var out strings.Builder
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		payload := strings.TrimPrefix(line, "data: ")
+		if payload == "[DONE]" {
+			continue
+		}
+		var chunk struct {
+			Choices []struct {
+				Delta struct {
+					Content string `json:"content"`
+				} `json:"delta"`
+			} `json:"choices"`
+		}
+		if json.Unmarshal([]byte(payload), &chunk) != nil {
+			continue
+		}
+		for _, c := range chunk.Choices {
+			out.WriteString(c.Delta.Content)
+		}
+	}
+	return out.String()
+}
+
 // ---------------------------------------------------------------------------
 // Happy paths
 // ---------------------------------------------------------------------------
@@ -296,9 +329,14 @@ func TestRelayMock_StreamChat(t *testing.T) {
 	if !strings.Contains(out, "[DONE]") {
 		t.Errorf("stream body missing [DONE] terminator:\n%s", out)
 	}
-	// The canned reply should appear inside a delta chunk.
-	if !strings.Contains(out, "Hello from the mock channel.") {
-		t.Errorf("stream body missing canned reply:\n%s", out)
+	// Content is streamed across multiple delta chunks (token-by-token).
+	// The first chunk carries the first word; verify it + that the
+	// reassembled content reconstructs the canned reply.
+	if !strings.Contains(out, `"content":"Hello"`) {
+		t.Errorf("stream body missing first delta chunk 'Hello':\n%s", out)
+	}
+	if got := reassembleChatStreamContent(out); !strings.Contains(got, "Hello from the mock channel.") {
+		t.Errorf("reassembled stream content does not contain canned reply, got: %q", got)
 	}
 }
 
