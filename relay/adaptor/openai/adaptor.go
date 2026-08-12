@@ -92,7 +92,72 @@ func (a *Adaptor) ConvertRequest(c *gin.Context, relayMode int, request *model.G
 		}
 		request.StreamOptions.IncludeUsage = true
 	}
+
+	// Flatten the tools array for upstreams that don't follow the OpenAI Chat
+	// Completions tools schema. The standard schema is:
+	//   {"type": "function", "function": {"name": "...", "parameters": ...}}
+	// A few strict upstreams (Console Go / opencode-go at opencode.ai/zen/go/v1)
+	// expect the name and parameters to be at the top level of each tool:
+	//   {"name": "...", "description": "...", "parameters": ...}
+	// and reject with 400 "tools[0]: missing field name" otherwise.
+	//
+	// Detection: any OpenAI-compatible upstream whose base URL contains
+	// "opencode.ai" (or other future strict schemas via config) gets the flat
+	// shape. This is gated by channel type and the URL pattern so we don't
+	// silently change the wire format for upstreams that DO follow the spec.
+	if a.needsFlatToolSchema(c) && len(request.Tools) > 0 {
+		flattened := make([]map[string]any, 0, len(request.Tools))
+		for _, t := range request.Tools {
+			// Skip tools that don't have a name (we can't synthesise one
+			// without the user telling us what to call it).
+			if t.Function.Name == "" {
+				continue
+			}
+			entry := map[string]any{
+				"name":       t.Function.Name,
+				"parameters": t.Function.Parameters,
+			}
+			if t.Function.Description != "" {
+				entry["description"] = t.Function.Description
+			}
+			if t.Type != "" {
+				entry["type"] = t.Type
+			}
+			flattened = append(flattened, entry)
+		}
+		// Replace the structured tools with the flat form. We do this by
+		// round-tripping through a thin shim type so the rest of the relay
+		// pipeline (which still expects the structured form) keeps working.
+		return struct {
+			*model.GeneralOpenAIRequest
+			Tools []map[string]any `json:"tools,omitempty"`
+		}{
+			GeneralOpenAIRequest: request,
+			Tools:                flattened,
+		}, nil
+	}
+
 	return request, nil
+}
+
+// needsFlatToolSchema reports whether the current channel is one of the
+// strict upstreams that reject the standard OpenAI tools schema. Detection
+// is URL-based; the URL is on the meta object (loaded from the channel
+// record by the relay pipeline before ConvertRequest is called).
+func (a *Adaptor) needsFlatToolSchema(c *gin.Context) bool {
+	meta := meta.GetByContext(c)
+	if meta == nil {
+		return false
+	}
+	if url := meta.BaseURL; url != "" {
+		// opencode-go (and any future opencode service) needs the flat
+		// tools schema. Add more matches here as new strict upstreams
+		// appear in the wild.
+		if strings.Contains(url, "opencode.ai") {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *Adaptor) ConvertImageRequest(request *model.ImageRequest) (any, error) {
