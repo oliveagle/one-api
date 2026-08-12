@@ -1,0 +1,20 @@
+# one-api agent install MANIFEST
+#
+# This directory is served by one-api at /agent-install/* (no auth).
+# One-shot installer:
+#
+#   curl -fsSL http://<host>:<port>/agent-install/install.sh \
+#       | ONEAPI_BASE_URL=http://<host>:<port> bash
+#
+# Files:
+#
+#   install.sh       (4311 bytes) — top-level curl|bash entrypoint
+#
+# The operator is expected to drop their own installer tarball at
+# /agent-install/cx1-latest.tar.gz (or override ONEAPI_TARBALL_PATH).
+# When the tarball is absent, install.sh falls back to fetching a sibling
+# /agent-install/install-inner.sh instead.
+
+## served files
+agent-install/install.sh  (4311 bytes)
+agent-install/MANIFEST  (636 bytes)
