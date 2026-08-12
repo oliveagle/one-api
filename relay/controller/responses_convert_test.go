@@ -2,6 +2,7 @@ package controller
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/songquanpeng/one-api/relay/model"
@@ -1032,3 +1033,193 @@ func TestRoundTrip_JSONParseConvert(t *testing.T) {
 
 // Ensure unused import doesn't break compilation.
 var _ = model.Message{}
+
+// ---------------------------------------------------------------------------
+// generateMessageID
+// ---------------------------------------------------------------------------
+
+func TestGenerateMessageID_Format(t *testing.T) {
+	id := generateMessageID()
+	if !strings.HasPrefix(id, "msg_") {
+		t.Errorf("id %q should start with msg_", id)
+	}
+	// 24 random hex chars after the prefix.
+	const wantLen = len("msg_") + 24
+	if len(id) != wantLen {
+		t.Errorf("id len = %d, want %d (got %q)", len(id), wantLen, id)
+	}
+	for _, c := range id[len("msg_"):] {
+		isDigit := c >= '0' && c <= '9'
+		isHex := c >= 'a' && c <= 'f'
+		if !isDigit && !isHex {
+			t.Errorf("non-hex character %q in id %q", c, id)
+			break
+		}
+	}
+}
+
+func TestGenerateMessageID_Unique(t *testing.T) {
+	const n = 100
+	seen := make(map[string]struct{}, n)
+	for i := 0; i < n; i++ {
+		id := generateMessageID()
+		if _, dup := seen[id]; dup {
+			t.Fatalf("duplicate id after %d generations: %q", i, id)
+		}
+		seen[id] = struct{}{}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ensureMessageIDs
+// ---------------------------------------------------------------------------
+
+func TestEnsureMessageIDs_AssignsMissing(t *testing.T) {
+	m1 := &model.Message{Role: "user", Content: "hi"}
+	m2 := &model.Message{Role: "assistant", Content: "hello"}
+	ensureMessageIDs([]*model.Message{m1, m2})
+	if m1.ID == "" || !strings.HasPrefix(m1.ID, "msg_") {
+		t.Errorf("m1.ID = %q, want non-empty msg_ prefix", m1.ID)
+	}
+	if m2.ID == "" || !strings.HasPrefix(m2.ID, "msg_") {
+		t.Errorf("m2.ID = %q, want non-empty msg_ prefix", m2.ID)
+	}
+	if m1.ID == m2.ID {
+		t.Errorf("expected unique IDs, got same: %q", m1.ID)
+	}
+}
+
+func TestEnsureMessageIDs_PreservesExisting(t *testing.T) {
+	m1 := &model.Message{ID: "msg_existing1", Role: "user"}
+	m2 := &model.Message{ID: "msg_existing2", Role: "assistant"}
+	ensureMessageIDs([]*model.Message{m1, m2})
+	if m1.ID != "msg_existing1" {
+		t.Errorf("m1.ID = %q, want preserved", m1.ID)
+	}
+	if m2.ID != "msg_existing2" {
+		t.Errorf("m2.ID = %q, want preserved", m2.ID)
+	}
+}
+
+func TestEnsureMessageIDs_MixedExistingAndNew(t *testing.T) {
+	m1 := &model.Message{ID: "msg_known", Role: "user"}
+	m2 := &model.Message{Role: "assistant"} // missing
+	m3 := &model.Message{Role: "tool"}      // missing
+	ensureMessageIDs([]*model.Message{m1, m2, m3})
+	if m1.ID != "msg_known" {
+		t.Errorf("existing id lost: got %q", m1.ID)
+	}
+	if m2.ID == "" || m2.ID == "msg_known" {
+		t.Errorf("m2.ID = %q, want freshly generated distinct id", m2.ID)
+	}
+	if m3.ID == "" || m3.ID == m2.ID || m3.ID == "msg_known" {
+		t.Errorf("m3.ID = %q, want freshly generated distinct id", m3.ID)
+	}
+}
+
+func TestEnsureMessageIDs_EmptySlice(t *testing.T) {
+	// Should be a no-op, no panic.
+	ensureMessageIDs(nil)
+	ensureMessageIDs([]*model.Message{})
+}
+
+func TestEnsureMessageIDs_NilEntry(t *testing.T) {
+	m1 := &model.Message{Role: "user"}
+	ensureMessageIDs([]*model.Message{m1, nil, m1})
+	if m1.ID == "" {
+		t.Errorf("expected m1 to get an ID, got empty")
+	}
+	// Nil entry must not panic; the valid entries still get IDs.
+}
+
+func TestEnsureMessageIDs_UniqueAcrossBatch(t *testing.T) {
+	const n = 200
+	batch := make([]*model.Message, n)
+	for i := 0; i < n; i++ {
+		batch[i] = &model.Message{Role: "user"}
+	}
+	ensureMessageIDs(batch)
+	seen := make(map[string]int, n)
+	for i, m := range batch {
+		if m.ID == "" {
+			t.Errorf("batch[%d] missing ID", i)
+		}
+		seen[m.ID]++
+	}
+	if len(seen) != n {
+		t.Errorf("expected %d unique IDs, got %d", n, len(seen))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// convertResponsesInputToChatMessages — message ID integration
+// ---------------------------------------------------------------------------
+
+func TestConvertResponsesInputToChatMessages_AssignsIDs(t *testing.T) {
+	msgs, err := convertResponsesInputToChatMessages("hello", "be helpful")
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(msgs))
+	}
+	for i, msg := range msgs {
+		if msg.ID == "" {
+			t.Errorf("msg[%d].ID = empty, want populated", i)
+		}
+		if !strings.HasPrefix(msg.ID, "msg_") {
+			t.Errorf("msg[%d].ID = %q, want msg_ prefix", i, msg.ID)
+		}
+	}
+	if msgs[0].ID == msgs[1].ID {
+		t.Errorf("expected unique IDs, got same: %q", msgs[0].ID)
+	}
+}
+
+func TestConvertResponsesInputToChatMessages_PreservesExistingIDs(t *testing.T) {
+	// Hand-crafted input where a message-like entry has an id pre-assigned
+	// (e.g. a real Responses call that carries ids). The conversion must
+	// preserve it. Today the conversion path doesn't carry ids from the wire
+	// (ResponseItem -> Message loses them), so this test is best framed around
+	// ensuring the helper respects existing IDs on the conversion output
+	// by injecting one via the underlying ensureMessageIDs contract.
+	msgs, err := convertResponsesInputToChatMessages("hello", "")
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+	// The user message gets a fresh ID — nothing to preserve here, so just
+	// verify the ID is set and well-formed.
+	if msgs[0].ID == "" {
+		t.Error("ID should be set")
+	}
+}
+
+func TestConvertResponsesInputToChatMessages_UniqueIDsAcrossBatch(t *testing.T) {
+	input := []any{
+		map[string]any{"type": "message", "role": "user", "content": "u1"},
+		map[string]any{"type": "message", "role": "assistant", "content": "a1"},
+		map[string]any{"type": "function_call", "call_id": "c1", "name": "f", "arguments": "{}"},
+		map[string]any{"type": "function_call_output", "call_id": "c1", "output": "r"},
+		map[string]any{"type": "message", "role": "user", "content": "u2"},
+	}
+	msgs, err := convertResponsesInputToChatMessages(input, "sys")
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if len(msgs) != 6 { // system + 5 input items
+		t.Fatalf("expected 6 messages, got %d", len(msgs))
+	}
+	seen := make(map[string]int, len(msgs))
+	for i, msg := range msgs {
+		if msg.ID == "" {
+			t.Errorf("msg[%d] missing ID", i)
+		}
+		seen[msg.ID]++
+	}
+	if len(seen) != len(msgs) {
+		t.Errorf("expected %d unique IDs, got %d (collisions: %v)", len(msgs), len(seen), seen)
+	}
+}

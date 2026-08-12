@@ -1,8 +1,11 @@
 package controller
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/songquanpeng/one-api/relay/constant/role"
 	relaymodel "github.com/songquanpeng/one-api/relay/model"
@@ -467,6 +470,52 @@ func convertInstructionsToSystemMessage(instructions string) *relaymodel.Message
 	}
 }
 
+// generateMessageID generates a unique message identifier of the form
+// "msg_" followed by 24 random hexadecimal characters (96 bits of entropy),
+// which is plenty to guarantee collision-free IDs within a single request.
+//
+// crypto/rand is used so the values are cryptographically unpredictable. In the
+// astronomically unlikely event the random source fails, a timestamp-based
+// fallback keeps the ID unique on a per-call basis.
+func generateMessageID() string {
+	var b [12]byte // 12 bytes -> 24 hex characters
+	if _, err := rand.Read(b[:]); err == nil {
+		return "msg_" + hex.EncodeToString(b[:])
+	}
+	return fmt.Sprintf("msg_%024x", time.Now().UnixNano())
+}
+
+// ensureMessageIDs walks the message list and assigns a freshly generated
+// unique ID to every message that does not already carry one. Messages with an
+// existing ID are left untouched.
+//
+// Uniqueness is enforced within the whole request: the function tracks every
+// seen ID (both pre-existing and freshly generated) and retries generation on
+// the unlikely event of a collision, so no two messages in the request ever
+// share an ID.
+func ensureMessageIDs(messages []*relaymodel.Message) {
+	seen := make(map[string]struct{}, len(messages))
+	for _, msg := range messages {
+		if msg == nil {
+			continue
+		}
+		if msg.ID != "" {
+			seen[msg.ID] = struct{}{}
+			continue
+		}
+
+		// Generate until we get one not already used in this request.
+		for {
+			id := generateMessageID()
+			if _, dup := seen[id]; !dup {
+				msg.ID = id
+				seen[id] = struct{}{}
+				break
+			}
+		}
+	}
+}
+
 // convertResponsesInputToChatMessages converts a Responses API request's input
 // and instructions fields into a slice of Chat Completions messages. This is
 // the main entry point for Responses -> Chat conversion.
@@ -494,6 +543,15 @@ func convertResponsesInputToChatMessages(input any, instructions string) ([]rela
 		}
 		messages = append(messages, msgs...)
 	}
+
+	// Assign a unique ID to every message that does not already carry one.
+	// The pointer slice aliases the value slice in place, so the generated
+	// IDs are visible on the returned messages with no copy.
+	ptrs := make([]*relaymodel.Message, len(messages))
+	for i := range messages {
+		ptrs[i] = &messages[i]
+	}
+	ensureMessageIDs(ptrs)
 
 	return messages, nil
 }
