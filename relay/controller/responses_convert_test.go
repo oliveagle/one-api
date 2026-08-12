@@ -612,6 +612,153 @@ func TestExtractReasoningContent_NilContent(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// injectReasoningContent
+// ---------------------------------------------------------------------------
+
+func TestInjectReasoningContent_NilMessages(t *testing.T) {
+	got := injectReasoningContent("some reasoning", nil)
+	if got {
+		t.Fatal("expected false for nil messages")
+	}
+}
+
+func TestInjectReasoningContent_EmptyMessages(t *testing.T) {
+	msgs := []model.Message{}
+	got := injectReasoningContent("some reasoning", &msgs)
+	if got {
+		t.Fatal("expected false for empty messages")
+	}
+}
+
+func TestInjectReasoningContent_NoAssistantMessage(t *testing.T) {
+	msgs := []model.Message{
+		{Role: "user", Content: "hello"},
+		{Role: "tool", Content: "result"},
+	}
+	got := injectReasoningContent("reasoning text", &msgs)
+	if got {
+		t.Fatal("expected false when no assistant message exists")
+	}
+}
+
+func TestInjectReasoningContent_InjectsIntoLastAssistant(t *testing.T) {
+	msgs := []model.Message{
+		{Role: "assistant", Content: "first"},
+		{Role: "user", Content: "hi"},
+		{Role: "assistant", Content: "second"},
+	}
+	got := injectReasoningContent("the reasoning", &msgs)
+	if !got {
+		t.Fatal("expected true when reasoning injected")
+	}
+	// First assistant should be untouched.
+	if msgs[0].ReasoningContent != nil {
+		t.Errorf("first assistant ReasoningContent = %v, want nil", msgs[0].ReasoningContent)
+	}
+	// Last assistant should have reasoning.
+	rc, ok := msgs[2].ReasoningContent.(string)
+	if !ok || rc != "the reasoning" {
+		t.Errorf("last assistant ReasoningContent = %v, want 'the reasoning' (type %T)", msgs[2].ReasoningContent, msgs[2].ReasoningContent)
+	}
+}
+
+func TestInjectReasoningContent_DoesNotOverwriteExistingReasoning(t *testing.T) {
+	existing := "existing reasoning"
+	msgs := []model.Message{
+		{Role: "assistant", Content: "reply", ReasoningContent: existing},
+	}
+	got := injectReasoningContent("new reasoning", &msgs)
+	// Should NOT overwrite existing reasoning_content.
+	if msgs[0].ReasoningContent != existing {
+		t.Errorf("ReasoningContent = %v, want %v", msgs[0].ReasoningContent, existing)
+	}
+	// NormalizeReasoningContent may or may not modify; just verify no overwrite.
+	_ = got
+}
+
+func TestInjectReasoningContent_EmptyReasoningWithToolCalls(t *testing.T) {
+	msgs := []model.Message{
+		{Role: "assistant", ToolCalls: []model.Tool{{Id: "c1", Type: "function", Function: model.Function{Name: "f"}}}},
+	}
+	// Empty reasoning string + tool_calls → NormalizeReasoningContent should inject placeholder.
+	got := injectReasoningContent("", &msgs)
+	if !got {
+		t.Fatal("expected true for placeholder injection")
+	}
+	rc, ok := msgs[0].ReasoningContent.(string)
+	if !ok || rc != model.ReasoningContentPlaceholder {
+		t.Errorf("ReasoningContent = %v (%T), want placeholder %q", msgs[0].ReasoningContent, msgs[0].ReasoningContent, model.ReasoningContentPlaceholder)
+	}
+}
+
+func TestInjectReasoningContent_EmptyReasoningWithoutToolCalls(t *testing.T) {
+	msgs := []model.Message{
+		{Role: "assistant", Content: "plain reply"},
+	}
+	// Empty reasoning + no tool_calls → nothing to inject, no modification.
+	got := injectReasoningContent("", &msgs)
+	if got {
+		t.Fatal("expected false — nothing to inject")
+	}
+	if msgs[0].ReasoningContent != nil {
+		t.Errorf("ReasoningContent = %v, want nil", msgs[0].ReasoningContent)
+	}
+}
+
+func TestInjectReasoningContent_NonEmptyReasoningWithToolCalls(t *testing.T) {
+	msgs := []model.Message{
+		{Role: "assistant", ToolCalls: []model.Tool{{Id: "c2", Type: "function", Function: model.Function{Name: "g"}}}},
+	}
+	got := injectReasoningContent("I should call g", &msgs)
+	if !got {
+		t.Fatal("expected true")
+	}
+	rc, ok := msgs[0].ReasoningContent.(string)
+	if !ok || rc != "I should call g" {
+		t.Errorf("ReasoningContent = %v, want 'I should call g'", msgs[0].ReasoningContent)
+	}
+}
+
+func TestInjectReasoningContent_MultipleAssistantWithToolCalls(t *testing.T) {
+	// Only the LAST assistant should get reasoning; others should get placeholder
+	// from NormalizeReasoningContent if they have tool_calls and nil reasoning.
+	msgs := []model.Message{
+		{Role: "assistant", Content: "first", ToolCalls: []model.Tool{{Id: "c1", Type: "function", Function: model.Function{Name: "a"}}}},
+		{Role: "tool", Content: "r1", ToolCallId: "c1"},
+		{Role: "assistant", Content: "second", ToolCalls: []model.Tool{{Id: "c2", Type: "function", Function: model.Function{Name: "b"}}}},
+	}
+	got := injectReasoningContent("reasoning for second", &msgs)
+	if !got {
+		t.Fatal("expected true")
+	}
+	// First assistant: had nil reasoning + tool_calls → placeholder from NormalizeReasoningContent.
+	rc0, ok := msgs[0].ReasoningContent.(string)
+	if !ok || rc0 != model.ReasoningContentPlaceholder {
+		t.Errorf("first assistant ReasoningContent = %v, want placeholder", msgs[0].ReasoningContent)
+	}
+	// Second assistant (last): gets the explicit reasoning.
+	rc2, ok := msgs[2].ReasoningContent.(string)
+	if !ok || rc2 != "reasoning for second" {
+		t.Errorf("second assistant ReasoningContent = %v, want 'reasoning for second'", msgs[2].ReasoningContent)
+	}
+}
+
+func TestInjectReasoningContent_AlreadyNormalized(t *testing.T) {
+	// If reasoning was already set (e.g. from a previous reasoning item), inject
+	// should not overwrite it, and NormalizeReasoningContent should not overwrite
+	// non-nil reasoning.
+	existing := "already there"
+	msgs := []model.Message{
+		{Role: "assistant", Content: "x", ReasoningContent: existing, ToolCalls: []model.Tool{{Id: "c1", Type: "function", Function: model.Function{Name: "f"}}}},
+	}
+	got := injectReasoningContent("new", &msgs)
+	if msgs[0].ReasoningContent != existing {
+		t.Errorf("ReasoningContent = %v, want %v", msgs[0].ReasoningContent, existing)
+	}
+	_ = got
+}
+
+// ---------------------------------------------------------------------------
 // convertInstructionsToSystemMessage
 // ---------------------------------------------------------------------------
 
