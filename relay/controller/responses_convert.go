@@ -555,3 +555,82 @@ func convertResponsesInputToChatMessages(input any, instructions string) ([]rela
 
 	return messages, nil
 }
+
+// convertResponsesToChatCompletions converts a Responses API request into a
+// Chat Completions request. It is the integration entry point used when the
+// selected upstream does not natively implement the Responses API (e.g. an
+// opencode-go channel): the Responses `input` / `instructions` fields are
+// translated into a `messages` array that any Chat Completions endpoint
+// understands.
+//
+// The conversion pipeline, in order:
+//
+//  1. parseInputItems      - decode the input array into typed ResponseItems
+//  2. convertInstructionsToSystemMessage - prepend a system message
+//  3. extractReasoningContent - collect reasoning text from reasoning items
+//  4. injectReasoningContent  - place reasoning on the assistant turn and
+//     normalise every thinking-mode turn
+//  5. ensureMessageIDs      - assign a unique id to every message
+//
+// Model and stream are copied across unchanged; the caller is responsible for
+// model-name mapping and billing, which the chat pipeline handles identically.
+func convertResponsesToChatCompletions(request *ResponsesRequest) (*relaymodel.GeneralOpenAIRequest, error) {
+	if request == nil {
+		return nil, fmt.Errorf("nil ResponsesRequest")
+	}
+
+	// 1. parseInputItems - decode the input array into typed items.
+	items, err := parseInputItemsDetailed(request.Input)
+	if err != nil {
+		return nil, fmt.Errorf("parse input items: %w", err)
+	}
+
+	// 2. convertInstructionsToSystemMessage - system message first.
+	messages := make([]relaymodel.Message, 0, len(items)+1)
+	if sys := convertInstructionsToSystemMessage(request.Instructions); sys != nil {
+		messages = append(messages, *sys)
+	}
+
+	// 3. extractReasoningContent - reasoning items contribute their text but
+	// are not emitted as standalone messages; the text is injected into the
+	// assistant turn that follows them.
+	var reasoning string
+	for i, item := range items {
+		r, isReasoning := item.(ResponseReasoningItem)
+		if !isReasoning {
+			msgs, err := convertResponseItemToMessage(item)
+			if err != nil {
+				return nil, fmt.Errorf("item[%d]: %w", i, err)
+			}
+			messages = append(messages, msgs...)
+			continue
+		}
+		if text, err := extractReasoningContent(r); err == nil && text != "" {
+			reasoning = text
+		}
+	}
+
+	// 4. injectReasoningContent - place the extracted reasoning on the last
+	// assistant message (e.g. the tool-call turn), and normalise every
+	// thinking-mode turn. If no assistant message exists to receive the text,
+	// emit a standalone assistant message carrying it so it is never lost.
+	if !injectReasoningContent(reasoning, &messages) && reasoning != "" {
+		messages = append(messages, relaymodel.Message{
+			Role:             role.Assistant,
+			ReasoningContent: reasoning,
+		})
+	}
+
+	// 5. ensureMessageIDs - every message carries a unique id.
+	ptrs := make([]*relaymodel.Message, len(messages))
+	for i := range messages {
+		ptrs[i] = &messages[i]
+	}
+	ensureMessageIDs(ptrs)
+
+	return &relaymodel.GeneralOpenAIRequest{
+		Model:    request.Model,
+		Stream:   request.Stream,
+		Messages: messages,
+	}, nil
+}
