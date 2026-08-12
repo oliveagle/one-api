@@ -156,7 +156,6 @@ func TestGetRoutingStatusSortsByBusyness(t *testing.T) {
 	}
 }
 
-
 func TestDeleteRoutingSession(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	store := routing.DefaultRouter().Store()

@@ -9,15 +9,15 @@ import (
 // SessionRecord is the observable state of one sticky-routed session, exposed
 // to the routing management page via Snapshot().
 type SessionRecord struct {
-	SessionKey         string    `json:"session_key"`
-	Group              string    `json:"group"`
-	Model              string    `json:"model"`
-	ChannelId          int       `json:"channel_id"`
-	Requests           int64     `json:"requests"`
-	Failures           int64     `json:"failures"`
-	ConsecutiveFailures int64    `json:"consecutive_failures"` // reset to 0 on each success
-	FirstSeen          time.Time `json:"first_seen"`
-	LastSeen           time.Time `json:"last_seen"`
+	SessionKey          string    `json:"session_key"`
+	Group               string    `json:"group"`
+	Model               string    `json:"model"`
+	ChannelId           int       `json:"channel_id"`
+	Requests            int64     `json:"requests"`
+	Failures            int64     `json:"failures"`
+	ConsecutiveFailures int64     `json:"consecutive_failures"` // reset to 0 on each success
+	FirstSeen           time.Time `json:"first_seen"`
+	LastSeen            time.Time `json:"last_seen"`
 }
 
 // ChannelState is the aggregated observable state of one upstream node
@@ -28,14 +28,14 @@ type ChannelState struct {
 	ChannelId    int       `json:"channel_id"`
 	Name         string    `json:"name"`
 	Sessions     int       `json:"sessions"`
-	Requests     int64     `json:"requests"`     // cumulative requests across sessions on this channel
-	Failures     int64     `json:"failures"`     // cumulative failures
+	Requests     int64     `json:"requests"`      // cumulative requests across sessions on this channel
+	Failures     int64     `json:"failures"`      // cumulative failures
 	ResponseTime int       `json:"response_time"` // ms, from DB
-	Balance      float64   `json:"balance"`      // USD, from DB
-	Status       int       `json:"status"`       // 1=enabled,2=manual-disabled,3=auto-disabled
-	Priority     int64     `json:"priority"`     // configured priority weight
+	Balance      float64   `json:"balance"`       // USD, from DB
+	Status       int       `json:"status"`        // 1=enabled,2=manual-disabled,3=auto-disabled
+	Priority     int64     `json:"priority"`      // configured priority weight
 	CoolingUntil time.Time `json:"cooling_until"`
-	Busyness     float64   `json:"busyness"`     // composite sort score
+	Busyness     float64   `json:"busyness"` // composite sort score
 }
 
 // Store holds the in-memory session -> channel sticky bindings, a registry of

@@ -266,7 +266,7 @@ func DefaultRouter() *Router {
 
 var defaultRouter = &Router{
 	provider: &channelCacheProvider{},
-	store: NewStore(),
+	store:    NewStore(),
 }
 
 // newRouter creates a Router with explicit provider and store, used in tests.
@@ -285,4 +285,3 @@ func (p *channelCacheProvider) SatisfiedChannels(group, model string) []*dbmodel
 func (p *channelCacheProvider) RandomSatisfied(group, model string, must bool) (*dbmodel.Channel, error) {
 	return dbmodel.CacheGetRandomSatisfiedChannel(group, model, must)
 }
-
