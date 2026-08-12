@@ -54,5 +54,9 @@ const (
 	OpenAICompatible
 	GeminiOpenAICompatible
 	AIHubMix
+	// Mock is a built-in channel type whose adaptor synthesizes responses
+	// in-process for integration tests. See relay/adaptor/mock/adaptor.go
+	// and apitype.Mock for the dispatch wiring.
+	Mock
 	Dummy
 )

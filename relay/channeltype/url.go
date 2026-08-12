@@ -55,6 +55,9 @@ var ChannelBaseURLs = []string{
 
 	"https://generativelanguage.googleapis.com/v1beta/openai/", // 51
 	"https://aihubmix.com", // 52
+	"http://mock",          // 53 (channeltype.Mock) — never contacted; the mock
+	// adaptor synthesizes responses in-process. The entry only exists to
+	// satisfy the len(ChannelBaseURLs) == Dummy invariant in init().
 }
 
 func init() {
