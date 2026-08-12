@@ -126,8 +126,13 @@ func getRequestBody(c *gin.Context, meta *meta.Meta, textRequest *model.GeneralO
 		meta.APIType == apitype.OpenAI &&
 		meta.OriginModelName == meta.ActualModelName &&
 		meta.ChannelType != channeltype.Baichuan &&
-		meta.ForcedSystemPrompt == "" {
-		// no need to convert request for openai
+		meta.ForcedSystemPrompt == "" &&
+		c.GetString(ctxkey.ConvertedFromResponses) == "" {
+		// no need to convert request for openai. Exception: responses that
+		// came in via /v1/responses and were converted to chat — those
+		// must still go through the OpenAI adaptor's ConvertRequest so
+		// per-channel tool schema adaptations (e.g. opencode-go's flat
+		// tools shape) can be applied.
 		return c.Request.Body, nil
 	}
 
