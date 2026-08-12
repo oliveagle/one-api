@@ -236,3 +236,26 @@ var StickySessionTTLSeconds = env.Int("STICKY_SESSION_TTL_SECONDS", 24*60*60)
 // cache / KV memory. The threshold is per-session per-channel and resets on
 // the first successful request.
 var StickyFailureThreshold = env.Int("STICKY_FAILURE_THRESHOLD", 3)
+
+// Agent install serving.
+//
+// When set to a non-empty path, one-api serves files from that directory at
+// the public, unauthenticated path "/agent-install/*". This lets any LAN
+// client install the Codex + one-api profile with:
+//
+//	curl -fsSL http://<host>:<port>/agent-install/install.sh | bash
+//
+// The directory is mounted as static files. It is the operator's responsibility
+// to put install.sh and any related assets (tarballs, checksums) into the
+// directory. If the directory does not exist or is empty/disabled at startup,
+// the static route is not registered at all (no 404 from a registered handler,
+// just the existing SPA / 404 fallback).
+//
+// Empty string disables the feature (default). A typical deployment sets this
+// to "./agent-install" so the bundled scripts ship inside the repository.
+var AgentInstallDir = env.String("AGENT_INSTALL_DIR", "./agent-install")
+
+// AgentInstallURLPrefix is the public URL prefix where the static files are
+// exposed. Hard-coded by design so install scripts can rely on it; do not
+// expose as env var.
+const AgentInstallURLPrefix = "/agent-install"
