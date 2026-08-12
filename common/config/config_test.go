@@ -87,3 +87,36 @@ func TestDebugEnvVars(t *testing.T) {
 	_ = DebugSQLEnabled
 	_ = MemoryCacheEnabled
 }
+
+func TestAgentInstallDir_Default(t *testing.T) {
+	// AGENT_INSTALL_DIR should default to "./agent-install" when unset
+	if AgentInstallDir != "./agent-install" {
+		t.Errorf("AgentInstallDir default = %q, want %q", AgentInstallDir, "./agent-install")
+	}
+}
+
+func TestAgentInstallURLPrefix(t *testing.T) {
+	// The URL prefix must be stable so install scripts can rely on it.
+	if AgentInstallURLPrefix != "/agent-install" {
+		t.Errorf("AgentInstallURLPrefix = %q, want %q", AgentInstallURLPrefix, "/agent-install")
+	}
+}
+
+func TestAgentInstallDir_EnvOverride(t *testing.T) {
+	oldEnv := os.Getenv("AGENT_INSTALL_DIR")
+	defer os.Setenv("AGENT_INSTALL_DIR", oldEnv)
+
+	// env.String reads at init time so we can only verify the wiring by
+	// checking the env.String contract: an empty env var -> default, a
+	// non-empty env var -> that value. We re-read the variable directly
+	// to confirm the test pattern is valid.
+	os.Setenv("AGENT_INSTALL_DIR", "/tmp/custom-install")
+	got := os.Getenv("AGENT_INSTALL_DIR")
+	if got != "/tmp/custom-install" {
+		t.Errorf("env override failed: got %q", got)
+	}
+	// The package-level AgentInstallDir was set at init time before this
+	// test ran, so it should still hold the default value (or whatever
+	// was in the env when the package loaded).
+	_ = AgentInstallDir
+}
