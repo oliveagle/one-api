@@ -312,13 +312,30 @@ func flattenContentToText(content any) string {
 	}
 }
 
-// convertResponsesInputToMessages converts a Responses API request's input and
-// instructions fields into a slice of Chat Completions messages. This is the
-// main entry point for Responses -> Chat conversion.
+// convertInstructionsToSystemMessage converts the Responses API `instructions`
+// field into a Chat Completions system message. The instructions carry the
+// top-level developer/system directive for the whole request.
+//
+// Returns nil when instructions is empty: no system message should be emitted
+// for an absent directive, keeping the converted message array clean.
+func convertInstructionsToSystemMessage(instructions string) *relaymodel.Message {
+	if instructions == "" {
+		return nil
+	}
+	return &relaymodel.Message{
+		Role:    role.System,
+		Content: instructions,
+	}
+}
+
+// convertResponsesInputToChatMessages converts a Responses API request's input
+// and instructions fields into a slice of Chat Completions messages. This is
+// the main entry point for Responses -> Chat conversion.
 //
 // The instructions field, if non-empty, becomes a system message prepended to
-// the result. The input array is converted item by item.
-func convertResponsesInputToMessages(input any, instructions string) ([]relaymodel.Message, error) {
+// the result (always first in the array). The input array is converted item by
+// item and appended after it.
+func convertResponsesInputToChatMessages(input any, instructions string) ([]relaymodel.Message, error) {
 	detailed, err := parseInputItemsDetailed(input)
 	if err != nil {
 		return nil, fmt.Errorf("parse input items: %w", err)
@@ -326,12 +343,9 @@ func convertResponsesInputToMessages(input any, instructions string) ([]relaymod
 
 	var messages []relaymodel.Message
 
-	// instructions -> system message
-	if instructions != "" {
-		messages = append(messages, relaymodel.Message{
-			Role:    role.System,
-			Content: instructions,
-		})
+	// instructions -> system message, always at the head of the array
+	if sys := convertInstructionsToSystemMessage(instructions); sys != nil {
+		messages = append(messages, *sys)
 	}
 
 	for i, item := range detailed {
