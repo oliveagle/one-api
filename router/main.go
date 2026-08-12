@@ -16,6 +16,9 @@ func SetRouter(router *gin.Engine, buildFS embed.FS) {
 	SetDashboardRouter(router)
 	SetZhipuProxyRouter(router)
 	SetRelayRouter(router)
+	// Register /agent-install/* BEFORE the frontend mount so the static
+	// file handler wins over the SPA fallback. Skip silently when disabled.
+	_ = SetAgentInstallRouter(router)
 	frontendBaseUrl := os.Getenv("FRONTEND_BASE_URL")
 	if config.IsMasterNode && frontendBaseUrl != "" {
 		frontendBaseUrl = ""
