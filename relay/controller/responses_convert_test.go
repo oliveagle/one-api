@@ -454,11 +454,44 @@ func TestConvertReasoningItem_Empty(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// convertResponsesInputToMessages (integration of all pieces)
+// convertInstructionsToSystemMessage
+// ---------------------------------------------------------------------------
+
+func TestConvertInstructionsToSystemMessage_NonEmpty(t *testing.T) {
+	msg := convertInstructionsToSystemMessage("You are a helpful assistant")
+	if msg == nil {
+		t.Fatal("expected non-nil message for non-empty instructions")
+	}
+	if msg.Role != "system" {
+		t.Errorf("role = %q, want system", msg.Role)
+	}
+	if msg.Content != "You are a helpful assistant" {
+		t.Errorf("content = %v", msg.Content)
+	}
+}
+
+func TestConvertInstructionsToSystemMessage_Empty(t *testing.T) {
+	if msg := convertInstructionsToSystemMessage(""); msg != nil {
+		t.Fatalf("expected nil for empty instructions, got %+v", msg)
+	}
+}
+
+func TestConvertInstructionsToSystemMessage_WhitespaceOnly(t *testing.T) {
+	msg := convertInstructionsToSystemMessage("   ")
+	if msg == nil {
+		t.Fatal("expected non-nil message for whitespace-only instructions (still non-empty string)")
+	}
+	if msg.Role != "system" {
+		t.Errorf("role = %q, want system", msg.Role)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// convertResponsesInputToChatMessages (integration of all pieces)
 // ---------------------------------------------------------------------------
 
 func TestConvertResponsesInputToMessages_StringInputWithInstructions(t *testing.T) {
-	msgs, err := convertResponsesInputToMessages("hello", "Be helpful")
+	msgs, err := convertResponsesInputToChatMessages("hello", "Be helpful")
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -486,7 +519,7 @@ func TestConvertResponsesInputToMessages_ArrayInputNoInstructions(t *testing.T) 
 		map[string]any{"type": "message", "role": "assistant", "content": "hello!"},
 		map[string]any{"type": "message", "role": "user", "content": "bye"},
 	}
-	msgs, err := convertResponsesInputToMessages(input, "")
+	msgs, err := convertResponsesInputToChatMessages(input, "")
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -506,7 +539,7 @@ func TestConvertResponsesInputToMessages_FullConversation(t *testing.T) {
 		map[string]any{"type": "function_call_output", "call_id": "call_1", "output": "Sunny, 72F"},
 		map[string]any{"type": "message", "role": "assistant", "content": "It's sunny and 72F in SF!"},
 	}
-	msgs, err := convertResponsesInputToMessages(input, "You are a weather bot")
+	msgs, err := convertResponsesInputToChatMessages(input, "You are a weather bot")
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -542,7 +575,7 @@ func TestConvertResponsesInputToMessages_WithReasoning(t *testing.T) {
 		map[string]any{"type": "reasoning", "id": "r1", "summary": []any{map[string]any{"type": "summary_text", "text": "Let me think..."}}},
 		map[string]any{"type": "message", "role": "assistant", "content": "The answer is 42."},
 	}
-	msgs, err := convertResponsesInputToMessages(input, "")
+	msgs, err := convertResponsesInputToChatMessages(input, "")
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -558,7 +591,7 @@ func TestConvertResponsesInputToMessages_WithReasoning(t *testing.T) {
 }
 
 func TestConvertResponsesInputToMessages_NilInput(t *testing.T) {
-	msgs, err := convertResponsesInputToMessages(nil, "")
+	msgs, err := convertResponsesInputToChatMessages(nil, "")
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -568,7 +601,7 @@ func TestConvertResponsesInputToMessages_NilInput(t *testing.T) {
 }
 
 func TestConvertResponsesInputToMessages_OnlyInstructions(t *testing.T) {
-	msgs, err := convertResponsesInputToMessages(nil, "Be concise")
+	msgs, err := convertResponsesInputToChatMessages(nil, "Be concise")
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -646,7 +679,7 @@ func TestRoundTrip_JSONParseConvert(t *testing.T) {
 		t.Fatalf("unmarshal request: %v", err)
 	}
 
-	msgs, err := convertResponsesInputToMessages(req.Input, req.Instructions)
+	msgs, err := convertResponsesInputToChatMessages(req.Input, req.Instructions)
 	if err != nil {
 		t.Fatalf("convert: %v", err)
 	}
