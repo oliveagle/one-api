@@ -56,10 +56,10 @@ func TestNormalizeToolCallArguments(t *testing.T) {
 
 func TestRepairOrphanedToolCalls(t *testing.T) {
 	tests := []struct {
-		name           string
-		input          []Message
-		expectedLen    int
-		expectedRoles  []string
+		name          string
+		input         []Message
+		expectedLen   int
+		expectedRoles []string
 	}{
 		{
 			name: "no orphaned calls - all responses present",
@@ -70,8 +70,8 @@ func TestRepairOrphanedToolCalls(t *testing.T) {
 				}},
 				{Role: "tool", ToolCallId: "call_1", Content: "result"},
 			},
-			expectedLen:    3,
-			expectedRoles:  []string{"user", "assistant", "tool"},
+			expectedLen:   3,
+			expectedRoles: []string{"user", "assistant", "tool"},
 		},
 		{
 			name: "orphaned call - missing tool response",
@@ -81,8 +81,8 @@ func TestRepairOrphanedToolCalls(t *testing.T) {
 					{Id: "call_1", Function: Function{Name: "test"}},
 				}},
 			},
-			expectedLen:    3,
-			expectedRoles:  []string{"user", "assistant", "tool"},
+			expectedLen:   3,
+			expectedRoles: []string{"user", "assistant", "tool"},
 		},
 		{
 			name: "multiple orphaned calls in one assistant message",
@@ -94,8 +94,8 @@ func TestRepairOrphanedToolCalls(t *testing.T) {
 					{Id: "call_3", Function: Function{Name: "test3"}},
 				}},
 			},
-			expectedLen:    5,
-			expectedRoles:  []string{"user", "assistant", "tool", "tool", "tool"},
+			expectedLen:   5,
+			expectedRoles: []string{"user", "assistant", "tool", "tool", "tool"},
 		},
 		{
 			name: "partial responses - some orphaned",
@@ -107,8 +107,8 @@ func TestRepairOrphanedToolCalls(t *testing.T) {
 				}},
 				{Role: "tool", ToolCallId: "call_1", Content: "result1"},
 			},
-			expectedLen:    4,
-			expectedRoles:  []string{"user", "assistant", "tool", "tool"},
+			expectedLen:   4,
+			expectedRoles: []string{"user", "assistant", "tool", "tool"},
 		},
 		{
 			name: "multiple assistant messages with tool calls",
@@ -122,8 +122,8 @@ func TestRepairOrphanedToolCalls(t *testing.T) {
 					{Id: "call_2", Function: Function{Name: "test2"}},
 				}},
 			},
-			expectedLen:    5,
-			expectedRoles:  []string{"user", "assistant", "tool", "assistant", "tool"},
+			expectedLen:   5,
+			expectedRoles: []string{"user", "assistant", "tool", "assistant", "tool"},
 		},
 		{
 			name: "assistant without tool calls - no repair needed",
@@ -131,8 +131,8 @@ func TestRepairOrphanedToolCalls(t *testing.T) {
 				{Role: "user", Content: "hi"},
 				{Role: "assistant", Content: "hello"},
 			},
-			expectedLen:    2,
-			expectedRoles:  []string{"user", "assistant"},
+			expectedLen:   2,
+			expectedRoles: []string{"user", "assistant"},
 		},
 	}
 
@@ -214,11 +214,11 @@ func TestRepairOrphanedToolCalls_IntegrationWithNormalize(t *testing.T) {
 
 	// Verify tool responses were added
 	if req.Messages[2].Role != "tool" || req.Messages[2].ToolCallId != "call_1" {
-		t.Errorf("message 2: expected tool response for call_1, got role=%s tool_call_id=%s", 
+		t.Errorf("message 2: expected tool response for call_1, got role=%s tool_call_id=%s",
 			req.Messages[2].Role, req.Messages[2].ToolCallId)
 	}
 	if req.Messages[3].Role != "tool" || req.Messages[3].ToolCallId != "call_2" {
-		t.Errorf("message 3: expected tool response for call_2, got role=%s tool_call_id=%s", 
+		t.Errorf("message 3: expected tool response for call_2, got role=%s tool_call_id=%s",
 			req.Messages[3].Role, req.Messages[3].ToolCallId)
 	}
 

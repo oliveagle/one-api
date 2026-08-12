@@ -38,8 +38,9 @@ func (r *GeneralOpenAIRequest) NormalizeToolCallArguments() bool {
 // message contains tool_calls but not all of them have corresponding
 // role="tool" response messages. Upstream providers (OpenAI, Azure, etc.)
 // reject such requests with:
-//   "an assistant message with 'tool_calls' must be followed by tool messages
-//    responding to each 'tool_call_id'"
+//
+//	"an assistant message with 'tool_calls' must be followed by tool messages
+//	 responding to each 'tool_call_id'"
 //
 // For each missing tool_call_id, this function inserts a synthetic tool
 // response message after all existing tool responses for that assistant message.
@@ -123,8 +124,9 @@ func (r *GeneralOpenAIRequest) RepairOrphanedToolCalls() bool {
 // tool_calls. When a client (e.g. the codex-cli chat emitter) drops the
 // reasoning_content for such a turn, the upstream rejects the whole request
 // with:
-//   invalid_request_error: The `reasoning_content` in the thinking mode must
-//   be passed back to the API.
+//
+//	invalid_request_error: The `reasoning_content` in the thinking mode must
+//	be passed back to the API.
 //
 // We cannot recover the original hidden reasoning, so we inject a stable
 // placeholder. Verified against opencode-go, zhipu GLM-5.2, xiaomi, volc and

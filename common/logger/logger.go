@@ -77,9 +77,9 @@ func SetupLogger() {
 		rotator := &lumberjack.Logger{
 			Filename:   filepath.Join(dir, "oneapi.log"),
 			MaxSize:    env.Int("LOG_MAX_SIZE_MB", defaultLogMaxSizeMB),   // megabytes per file
-			MaxBackups: env.Int("LOG_MAX_BACKUPS", defaultLogMaxBackups), // number of rotated files to keep
+			MaxBackups: env.Int("LOG_MAX_BACKUPS", defaultLogMaxBackups),  // number of rotated files to keep
 			MaxAge:     env.Int("LOG_MAX_AGE_DAYS", defaultLogMaxAgeDays), // days to keep rotated files
-			Compress:   env.Bool("LOG_COMPRESS", defaultLogCompress),     // gzip rotated files
+			Compress:   env.Bool("LOG_COMPRESS", defaultLogCompress),      // gzip rotated files
 			LocalTime:  true,
 		}
 		activeFileWriter = rotator

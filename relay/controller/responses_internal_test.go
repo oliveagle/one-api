@@ -192,8 +192,6 @@ func TestRelayResponsesHelper_UnsupportedMethod(t *testing.T) {
 	}
 }
 
-
-
 func TestResponsesRequestJSON(t *testing.T) {
 	req := ResponsesRequest{
 		Model:        "gpt-4o",

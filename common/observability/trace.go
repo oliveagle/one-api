@@ -5,11 +5,11 @@ import (
 	"fmt"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
-	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/songquanpeng/one-api/common/config"
@@ -27,7 +27,7 @@ const serviceVersion = "v0.0.0"
 func initTracerProvider(ctx context.Context) (*sdktrace.TracerProvider, error) {
 	res, err := resource.New(ctx,
 		resource.WithAttributes(
-		semconv.ServiceName(config.OtelServiceName),
+			semconv.ServiceName(config.OtelServiceName),
 			semconv.ServiceVersion(serviceVersion),
 		),
 	)

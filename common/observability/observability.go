@@ -10,7 +10,7 @@ import (
 )
 
 var (
-	shutdownOnce sync.Once
+	shutdownOnce  sync.Once
 	shutdownFuncs []func(context.Context) error
 )
 

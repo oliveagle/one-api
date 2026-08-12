@@ -9,9 +9,9 @@ import (
 
 func TestBytes2Size(t *testing.T) {
 	cases := []struct {
-		name string
+		name  string
 		bytes int64
-		want string
+		want  string
 	}{
 		{"zero", 0, "0 B"},
 		{"bytes", 500, "500 B"},

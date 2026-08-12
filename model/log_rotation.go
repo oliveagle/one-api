@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"gorm.io/gorm"
 	"gopkg.in/natefinch/lumberjack.v2"
+	"gorm.io/gorm"
 
 	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/env"
@@ -262,7 +262,6 @@ func StartDBLogRotator(ctx context.Context, logDir string) {
 func DBLogRotatorPath() string {
 	return dbLogRotatorPath
 }
-
 
 // resetDBLogRotator clears the singleton so the next call to
 // setupDBLogRotator (or anything that uses it) writes to a fresh dir.
