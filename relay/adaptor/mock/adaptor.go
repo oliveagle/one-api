@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -136,6 +137,11 @@ func (a *Adaptor) DoRequest(c *gin.Context, meta *meta.Meta, requestBody io.Read
 		return newJSONResponse(http.StatusOK, synthesizeResponsesResponse(modelName, cannedReply)), nil
 	case "openai-responses-stream":
 		return newSSEResponse(synthesizeResponsesStream(modelName, cannedReply)), nil
+	case "openai-responses-tool-call":
+		// Responses API with a function_call output item (instead of a
+		// message). Mirrors the Responses shape for tool invocation:
+		// output[].type == "function_call" with name + arguments.
+		return newJSONResponse(http.StatusOK, synthesizeResponsesToolCallResponse(modelName)), nil
 	case "error-429":
 		return newJSONResponse(http.StatusTooManyRequests, synthesizeErrorBody("rate limited by mock", "rate_limit_exceeded")), nil
 	case "error-500":
@@ -278,66 +284,133 @@ func synthesizeChatResponse(modelName, content string, withToolCall bool) []byte
 	return out
 }
 
-// synthesizeStreamChunks builds an OpenAI-compatible SSE stream: one
-// role chunk, one or more content delta chunks, a final stop chunk, an
-// optional usage chunk, and the [DONE] sentinel.
+// synthesizeStreamChunks builds an OpenAI Chat Completions SSE stream.
+//
+// DATA SOURCE: follows the OpenAI Chat Completions streaming spec
+// (platform.openai.com docs, "Streaming" section). Real providers emit
+// content across multiple delta chunks (token-by-token); we split on
+// word boundaries to exercise the relay's StreamHandler, which
+// concatenates choice.Delta.Content across chunks.
+//
+// Frame sequence (data:-only, no event: lines — unlike Responses):
+//
+//	data: {"choices":[{"delta":{"role":"assistant"}}]}            ← role chunk
+//	data: {"choices":[{"delta":{"content":"Hello"}}]}             ← content delta(s)
+//	data: {"choices":[{"delta":{"content":" world"}}]}
+//	data: {"choices":[{"delta":{},"finish_reason":"stop"}]}       ← finish
+//	data: {"choices":[],"usage":{...}}                            ← usage (stream_options.include_usage)
+//	data: [DONE]
 func synthesizeStreamChunks(modelName, content string) []byte {
 	var buf bytes.Buffer
 	writeChunk := func(payload map[string]any) {
 		b, _ := json.Marshal(payload)
 		fmt.Fprintf(&buf, "data: %s\n\n", b)
 	}
-
-	// role
-	writeChunk(map[string]any{
-		"id": "chatcmpl-mock", "object": "chat.completion.chunk",
-		"created": 1700000000, "model": modelName,
-		"choices": []map[string]any{{"index": 0, "delta": map[string]any{"role": "assistant"}}},
-	})
-	// content (single delta keeps assertions simple; the OpenAI
-	// StreamHandler concatenates choice.Delta.Content across chunks)
-	if content != "" {
-		writeChunk(map[string]any{
+	chunkBase := func() map[string]any {
+		return map[string]any{
 			"id": "chatcmpl-mock", "object": "chat.completion.chunk",
 			"created": 1700000000, "model": modelName,
-			"choices": []map[string]any{{"index": 0, "delta": map[string]any{"content": content}}},
-		})
+		}
 	}
-	stop := "stop"
-	// finish
-	writeChunk(map[string]any{
-		"id": "chatcmpl-mock", "object": "chat.completion.chunk",
-		"created": 1700000000, "model": modelName,
-		"choices": []map[string]any{{"index": 0, "delta": map[string]any{}, "finish_reason": stop}},
-	})
-	// usage (matches the non-stream numbers)
-	writeChunk(map[string]any{
-		"id": "chatcmpl-mock", "object": "chat.completion.chunk",
-		"created": 1700000000, "model": modelName,
-		"choices": []map[string]any{},
-		"usage": map[string]any{
+
+	// 1. role chunk — first chunk carries the role, content is empty
+	writeChunk(func() map[string]any {
+		c := chunkBase()
+		c["choices"] = []map[string]any{{"index": 0, "delta": map[string]any{"role": "assistant"}, "finish_reason": nil}}
+		return c
+	}())
+	// 2. content deltas — split into multiple chunks to mirror real
+	// token-by-token streaming (the OpenAI StreamHandler concatenates
+	// choice.Delta.Content across all chunks)
+	for _, piece := range splitIntoChunks(content) {
+		writeChunk(func() map[string]any {
+			c := chunkBase()
+			c["choices"] = []map[string]any{{"index": 0, "delta": map[string]any{"content": piece}, "finish_reason": nil}}
+			return c
+		}())
+	}
+	// 3. finish chunk
+	writeChunk(func() map[string]any {
+		c := chunkBase()
+		stop := "stop"
+		c["choices"] = []map[string]any{{"index": 0, "delta": map[string]any{}, "finish_reason": stop}}
+		return c
+	}())
+	// 4. usage chunk (matches the non-stream numbers; appears when
+	// stream_options.include_usage is set, which the OpenAI adaptor
+	// forces on for all stream requests — see openai/adaptor.go:90)
+	writeChunk(func() map[string]any {
+		c := chunkBase()
+		c["choices"] = []map[string]any{}
+		c["usage"] = map[string]any{
 			"prompt_tokens":     9,
 			"completion_tokens": 12,
 			"total_tokens":      21,
-		},
-	})
+		}
+		return c
+	}())
 	buf.WriteString("data: [DONE]\n\n")
 	return buf.Bytes()
 }
 
 // synthesizeErrorBody returns an OpenAI-shaped error envelope that
 // RelayErrorHandler will parse into a friendly client-facing error.
+//
+// DATA SOURCE: OpenAI API error response shape (platform.openai.com docs,
+// "Error codes" section). The envelope is {"error": {message, type, param,
+// code}}. The relay's RelayErrorHandler (relay/controller/error.go) parses
+// errResponse.Error.Message / .Type to surface to the client, so both
+// fields must be populated. The `code` field is `any` in the relay's
+// model.Error (can be string, number, or null); we use a descriptive
+// string matching what OpenAI actually returns for each error class.
 func synthesizeErrorBody(message, errType string) []byte {
+	// Map the error type to the `code` value OpenAI actually returns.
+	// These are the canonical machine-readable codes clients switch on.
+	code := "internal_error"
+	switch errType {
+	case "rate_limit_exceeded":
+		code = "rate_limit_exceeded"
+	case "server_error":
+		code = "internal_server_error"
+	case "invalid_request_error":
+		code = "invalid_request"
+	}
 	body := map[string]any{
 		"error": map[string]any{
 			"message": message,
 			"type":    errType,
-			"param":   "",
-			"code":    nil,
+			"param":   nil,
+			"code":    code,
 		},
 	}
 	out, _ := json.Marshal(body)
 	return out
+}
+
+// splitIntoChunks breaks text into multiple pieces for streaming. Real
+// providers emit token-by-token; we split on word boundaries which is
+// close enough to exercise the relay's delta-concatenation logic while
+// keeping the chunks human-readable in test output. A single-word text
+// yields a single chunk (which is still a valid stream).
+func splitIntoChunks(text string) []string {
+	if text == "" {
+		return nil
+	}
+	words := strings.Fields(text)
+	if len(words) <= 1 {
+		return []string{text}
+	}
+	chunks := make([]string, 0, len(words))
+	for i, w := range words {
+		if i == 0 {
+			chunks = append(chunks, w)
+		} else {
+			// Preserve the space before each subsequent word so the
+			// concatenated result matches the original text exactly.
+			chunks = append(chunks, " "+w)
+		}
+	}
+	return chunks
 }
 
 // synthesizeResponsesResponse builds an OpenAI Responses API (non-stream)
@@ -376,23 +449,64 @@ func synthesizeResponsesResponse(modelName, text string) []byte {
 	return out
 }
 
+// synthesizeResponsesToolCallResponse builds a Responses API non-stream
+// body whose output is a function_call item instead of a message.
+//
+// DATA SOURCE: OpenAI Responses API docs — when the model invokes a
+// tool, the output array contains an item of type "function_call" with
+// name, arguments (JSON string), call_id, and status. This mirrors the
+// Chat Completions tool_calls shape but at the Responses item level.
+func synthesizeResponsesToolCallResponse(modelName string) []byte {
+	body := map[string]any{
+		"id":      "resp_mock",
+		"object":  "response",
+		"created": 1700000000,
+		"model":   modelName,
+		"status":  "completed",
+		"output": []map[string]any{{
+			"type":      "function_call",
+			"id":        "fc_mock",
+			"call_id":   "call_mock",
+			"name":      "get_weather",
+			"arguments": `{"location":"San Francisco, CA","unit":"celsius"}`,
+			"status":    "completed",
+		}},
+		"usage": map[string]any{
+			"input_tokens":  19,
+			"output_tokens": 7,
+			"total_tokens":  26,
+		},
+	}
+	out, _ := json.Marshal(body)
+	return out
+}
+
 // synthesizeResponsesStream builds an OpenAI Responses API SSE stream.
-// The Responses streaming protocol interleaves "event:" lines with
-// "data:" lines (unlike Chat Completions which is data-only). The relay
-// forwards frames verbatim and only scans data lines for a usage block
-// via usageFromSSELine, which accepts usage at the top level OR nested
-// under "response". We emit a response.completed frame carrying usage
-// at the end so billing settles correctly.
 //
-// Frame sequence (minimal but protocol-valid):
+// DATA SOURCE: The event sequence below follows the official OpenAI
+// Responses streaming event list (see developers.openai.com api docs,
+// StreamingEvent union). The relay forwards frames verbatim and only
+// scans data lines for a usage block via usageFromSSELine, which accepts
+// usage at the top level OR nested under "response.usage".
 //
-//	event: response.created
-//	data: {"type":"response.created","response":{"id":"resp_mock",...}}
-//	event: response.output_text.delta
-//	data: {"type":"response.output_text.delta","delta":"<text>"}
-//	event: response.completed
-//	data: {"type":"response.completed","response":{...,"usage":{...}}}
+// Complete event sequence for a simple text response (each event is an
+// "event:" line followed by a "data:" line, per the SSE spec):
+//
+//	event: response.created              data: {type, response:{...}}
+//	event: response.in_progress          data: {type, response:{...}}
+//	event: response.output_item.added    data: {type, output_index:0, item:{type:"message",...}}
+//	event: response.content_part.added   data: {type, output_index:0, content_index:0, part:{type:"output_text",...}}
+//	event: response.output_text.delta    data: {type, output_index:0, content_index:0, delta:"<chunk>"}
+//	  ... (one delta per text chunk)
+//	event: response.output_text.done     data: {type, output_index:0, content_index:0, text:"<full>"}
+//	event: response.content_part.done    data: {type, output_index:0, content_index:0, part:{...}}
+//	event: response.output_item.done     data: {type, output_index:0, item:{...}}
+//	event: response.completed            data: {type, response:{...,"usage":{...}}}  ← usage here
 //	data: [DONE]
+//
+// The text is split into multiple delta chunks to mirror how real
+// providers stream (token-by-token), exercising the relay's line-by-line
+// SSE forwarding. We split on word boundaries for readability.
 func synthesizeResponsesStream(modelName, text string) []byte {
 	var buf bytes.Buffer
 	writeFrame := func(event string, payload map[string]any) {
@@ -401,38 +515,86 @@ func synthesizeResponsesStream(modelName, text string) []byte {
 		fmt.Fprintf(&buf, "data: %s\n\n", b)
 	}
 
-	respSkeleton := map[string]any{
-		"id": "resp_mock", "object": "response",
-		"created": 1700000000, "model": modelName, "status": "in_progress",
+	const respID = "resp_mock"
+	const outputIndex = 0
+	const contentIndex = 0
+
+	baseResponse := func(status string) map[string]any {
+		return map[string]any{
+			"id": respID, "object": "response",
+			"created_at": 1700000000, "model": modelName,
+			"status": status,
+		}
 	}
-	// response.created
+
+	// 1. response.created
 	writeFrame("response.created", map[string]any{
-		"type":     "response.created",
-		"response": respSkeleton,
+		"type": "response.created", "response": baseResponse("in_progress"),
 	})
-	// output text delta
-	writeFrame("response.output_text.delta", map[string]any{
-		"type":  "response.output_text.delta",
-		"delta": text,
+	// 2. response.in_progress
+	writeFrame("response.in_progress", map[string]any{
+		"type": "response.in_progress", "response": baseResponse("in_progress"),
 	})
-	// response.completed — carries the final usage block the relay
-	// extracts for billing (usageFromSSELine matches response.usage).
-	completed := map[string]any{
-		"id": "resp_mock", "object": "response",
-		"created": 1700000000, "model": modelName, "status": "completed",
-		"output": []map[string]any{{
+	// 3. response.output_item.added — the message item appears
+	messageItem := map[string]any{
+		"type": "message", "role": "assistant",
+		"content": []any{}, "status": "in_progress",
+	}
+	writeFrame("response.output_item.added", map[string]any{
+		"type":         "response.output_item.added",
+		"output_index": outputIndex, "item": messageItem,
+	})
+	// 4. response.content_part.added — the output_text part appears
+	textPart := map[string]any{"type": "output_text", "text": "", "annotations": []any{}}
+	writeFrame("response.content_part.added", map[string]any{
+		"type":         "response.content_part.added",
+		"output_index": outputIndex, "content_index": contentIndex, "part": textPart,
+	})
+	// 5. response.output_text.delta — one per text chunk
+	for _, chunk := range splitIntoChunks(text) {
+		writeFrame("response.output_text.delta", map[string]any{
+			"type":         "response.output_text.delta",
+			"output_index": outputIndex, "content_index": contentIndex,
+			"delta": chunk,
+		})
+	}
+	// 6. response.output_text.done
+	writeFrame("response.output_text.done", map[string]any{
+		"type":         "response.output_text.done",
+		"output_index": outputIndex, "content_index": contentIndex,
+		"text": text,
+	})
+	// 7. response.content_part.done
+	writeFrame("response.content_part.done", map[string]any{
+		"type":         "response.content_part.done",
+		"output_index": outputIndex, "content_index": contentIndex,
+		"part": map[string]any{"type": "output_text", "text": text, "annotations": []any{}},
+	})
+	// 8. response.output_item.done
+	writeFrame("response.output_item.done", map[string]any{
+		"type":         "response.output_item.done",
+		"output_index": outputIndex,
+		"item": map[string]any{
 			"type": "message", "role": "assistant",
-			"content": []map[string]any{{"type": "output_text", "text": text}},
-		}},
-		"usage": map[string]any{
-			"input_tokens":  19,
-			"output_tokens": 7,
-			"total_tokens":  26,
+			"content": []map[string]any{{"type": "output_text", "text": text, "annotations": []any{}}},
+			"status":  "completed",
 		},
+	})
+	// 9. response.completed — carries the final usage block the relay
+	// extracts for billing (usageFromSSELine matches response.usage).
+	completed := baseResponse("completed")
+	completed["output"] = []map[string]any{{
+		"type": "message", "role": "assistant",
+		"content": []map[string]any{{"type": "output_text", "text": text, "annotations": []any{}}},
+		"status":  "completed",
+	}}
+	completed["usage"] = map[string]any{
+		"input_tokens":  19,
+		"output_tokens": 7,
+		"total_tokens":  26,
 	}
 	writeFrame("response.completed", map[string]any{
-		"type":     "response.completed",
-		"response": completed,
+		"type": "response.completed", "response": completed,
 	})
 	buf.WriteString("data: [DONE]\n\n")
 	return buf.Bytes()
