@@ -154,6 +154,79 @@ func TestDoRequest_ToolCall(t *testing.T) {
 	}
 }
 
+func TestDoRequest_ResponsesNonStream(t *testing.T) {
+	c := newCtxWithBehavior(t, "openai-responses", `{}`)
+	a := &Adaptor{}
+	resp, err := a.DoRequest(c, nil, strings.NewReader(`{"model":"mock-gpt-4o"}`))
+	if err != nil {
+		t.Fatalf("DoRequest: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	body := bodyString(t, resp)
+	// Responses shape markers
+	for _, want := range []string{
+		`"object":"response"`,
+		`"status":"completed"`,
+		`"type":"output_text"`,
+		`"input_tokens":19`,
+		`"output_tokens":7`,
+		cannedReply,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("responses body missing %q:\n%s", want, body)
+		}
+	}
+}
+
+func TestDoRequest_ResponsesStreamForced(t *testing.T) {
+	// openai-responses-stream forces SSE regardless of stream flag.
+	c := newCtxWithBehavior(t, "openai-responses-stream", `{}`)
+	a := &Adaptor{}
+	resp, err := a.DoRequest(c, nil, strings.NewReader(`{"model":"mock-gpt-4o"}`))
+	if err != nil {
+		t.Fatalf("DoRequest: %v", err)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/event-stream") {
+		t.Fatalf("Content-Type = %q, want text/event-stream", ct)
+	}
+	body := bodyString(t, resp)
+	// Responses SSE carries event: lines alongside data: lines.
+	for _, want := range []string{
+		"event: response.created",
+		"event: response.output_text.delta",
+		"event: response.completed",
+		`"type":"response.completed"`,
+		`"input_tokens":19`,
+		"[DONE]",
+		cannedReply,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("responses stream body missing %q:\n%s", want, body)
+		}
+	}
+}
+
+func TestDoRequest_ResponsesStreamFlagInBody(t *testing.T) {
+	// stream:true in body with openai-responses behavior should also
+	// produce the Responses SSE shape.
+	c := newCtxWithBehavior(t, "openai-responses", `{"stream":true}`)
+	a := &Adaptor{}
+	resp, err := a.DoRequest(c, nil,
+		strings.NewReader(`{"model":"mock-gpt-4o","stream":true}`))
+	if err != nil {
+		t.Fatalf("DoRequest: %v", err)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/event-stream") {
+		t.Fatalf("Content-Type = %q, want text/event-stream", ct)
+	}
+	body := bodyString(t, resp)
+	if !strings.Contains(body, "event: response.completed") {
+		t.Errorf("stream body missing response.completed event:\n%s", body)
+	}
+}
+
 func TestDoRequest_ErrorStatuses(t *testing.T) {
 	cases := []struct {
 		behavior string

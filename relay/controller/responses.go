@@ -13,11 +13,13 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/songquanpeng/one-api/common"
+	"github.com/songquanpeng/one-api/common/ctxkey"
 	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/relay"
 	"github.com/songquanpeng/one-api/relay/adaptor/openai"
 	"github.com/songquanpeng/one-api/relay/billing"
 	billingratio "github.com/songquanpeng/one-api/relay/billing/ratio"
+	"github.com/songquanpeng/one-api/relay/channeltype"
 	"github.com/songquanpeng/one-api/relay/meta"
 	relaymodel "github.com/songquanpeng/one-api/relay/model"
 )
@@ -27,11 +29,22 @@ import (
 // untouched, so stateful fields (previous_response_id, store) and server-side
 // tools keep working. See docs/adr/0001-openai-responses-api-passthrough.md.
 type ResponsesRequest struct {
-	Model        string `json:"model"`
-	Stream       bool   `json:"stream,omitempty"`
-	Input        any    `json:"input,omitempty"`
-	Instructions string `json:"instructions,omitempty"`
-	MaxOutput    int    `json:"max_output_tokens,omitempty"`
+	Model        string         `json:"model"`
+	Stream       bool           `json:"stream,omitempty"`
+	Input        any            `json:"input,omitempty"`
+	Instructions string         `json:"instructions,omitempty"`
+	MaxOutput    int            `json:"max_output_tokens,omitempty"`
+	// Tools carries the raw tools array from the Responses API request. The
+	// schema mirrors OpenAI ChatCompletions (type=function, function={name,...})
+	// so the same struct can be re-emitted as-is when forwarding to a chat
+	// upstream. Anything exotic (mcp_tool, etc.) round-trips as RawMessage
+	// and the upstream is the one that has to interpret it.
+	Tools []relaymodel.Tool `json:"tools,omitempty"`
+	// ToolChoice is the same shape as ChatCompletions: "auto" / "none" /
+	// "required" or an object like {"type":"function","function":{"name":"f"}}.
+	// We keep it as raw JSON so anything the Responses API ever adds is
+	// preserved.
+	ToolChoice any `json:"tool_choice,omitempty"`
 }
 
 // ResponsesUsage mirrors the Responses API usage block. The field names differ
@@ -142,9 +155,97 @@ func RelayResponsesHelper(c *gin.Context) *relaymodel.ErrorWithStatusCode {
 	return openai.ErrorWrapper(fmt.Errorf("unsupported method for Responses API"), "unsupported_method", http.StatusMethodNotAllowed)
 }
 
-// relayResponsesCreate relays POST /v1/responses as a passthrough. The request
-// body is forwarded byte-for-byte and the response is returned as-is; only
-// `model` and `stream` are inspected, for routing and billing.
+// upstreamSupportsResponses reports whether the selected channel's upstream
+// natively implements the Responses API, in which case the request is passed
+// through untouched. Channels that do not (e.g. opencode-go) get an automatic
+// Responses -> Chat Completions conversion.
+//
+// A channel opts in to passthrough via the `support_responses` channel config
+// flag. The AIHubMix channel type is additionally treated as native because
+// the passthrough path was originally verified against it (see
+// docs/adr/0001-openai-responses-api-passthrough.md); everything else defaults
+// to conversion.
+func upstreamSupportsResponses(meta *meta.Meta) bool {
+	if meta == nil {
+		return false
+	}
+	if meta.Config.SupportResponses {
+		return true
+	}
+	return meta.ChannelType == channeltype.AIHubMix
+}
+
+// relayResponsesConvertToChat converts a Responses API request into a Chat
+// Completions request and delegates to the existing chat pipeline
+// (RelayTextHelper), which handles model mapping, billing, streaming and
+// response forwarding. The converted body is injected into the request context
+// so RelayTextHelper reads it as if the client had called /v1/chat/completions
+// directly.
+//
+// The original request path and body are restored before returning, so the
+// caller's retry/error handling sees the untouched Responses request.
+func relayResponsesConvertToChat(c *gin.Context, request *ResponsesRequest) *relaymodel.ErrorWithStatusCode {
+	if _, err := convertResponsesRequestToChat(c, request); err != nil {
+		return openai.ErrorWrapper(err, "responses_conversion_failed", http.StatusBadRequest)
+	}
+	return RelayTextHelper(c)
+}
+
+// convertResponsesRequestToChat converts a Responses API request into a Chat
+// Completions request body and rewrites the request context so RelayTextHelper
+// picks it up as a chat request. Returns the converted JSON body on success.
+func convertResponsesRequestToChat(c *gin.Context, request *ResponsesRequest) ([]byte, error) {
+	ctx := c.Request.Context()
+
+	// Log the original Responses request shape before conversion.
+	logger.Debugf(ctx, "converting Responses request to Chat Completions: model=%q stream=%t instructions=%q input=%v",
+		request.Model, request.Stream, request.Instructions, request.Input)
+
+	converted, err := convertResponsesToChatCompletions(request)
+	if err != nil {
+		return nil, err
+	}
+
+	body, err := json.Marshal(converted)
+	if err != nil {
+		return nil, err
+	}
+	// Log the converted Chat Completions body at debug level.
+	logger.Debugf(ctx, "converted Chat Completions request: %s", string(body))
+	// The fast path in getRequestBody returns c.Request.Body verbatim
+	// without re-running the OpenAI adaptor's ConvertRequest. That fast
+	// path skips per-channel tool schema adaptations (e.g. opencode-go's
+	// flat tools shape), so the upstream would see the standard OpenAI
+	// shape and reject. We set the modified flag here so the slow path
+	// runs, producing the per-channel adjusted body.
+	c.Set(ctxkey.ConvertedFromResponses, "true")
+
+	// Remember the original body/path so they can be restored afterwards. The
+	// body was cached by UnmarshalBodyReusable when relayResponsesCreate parsed
+	// the request.
+	originalBody, _ := common.GetRequestBody(c)
+	originalPath := c.Request.URL.Path
+
+	// Inject the converted body and rewrite the path so RelayTextHelper derives
+	// the ChatCompletions relay mode (billing, validation and the adaptor all
+	// switch on it).
+	c.Set(ctxkey.KeyRequestBody, body)
+	c.Request.Body = io.NopCloser(bytes.NewBuffer(body))
+	c.Request.URL.Path = "/v1/chat/completions"
+	defer func() {
+		c.Request.URL.Path = originalPath
+		c.Set(ctxkey.KeyRequestBody, originalBody)
+	}()
+
+	return body, nil
+}
+
+// relayResponsesCreate relays POST /v1/responses. When the selected channel's
+// upstream natively supports the Responses API the body is forwarded
+// byte-for-byte and the response is returned as-is; only `model` and `stream`
+// are inspected, for routing and billing. When the upstream does not support
+// the Responses API (e.g. an opencode-go channel), the request is converted to
+// a Chat Completions request and handled by the existing chat pipeline.
 func relayResponsesCreate(c *gin.Context) *relaymodel.ErrorWithStatusCode {
 	ctx := c.Request.Context()
 	meta := meta.GetByContext(c)
@@ -159,6 +260,12 @@ func relayResponsesCreate(c *gin.Context) *relaymodel.ErrorWithStatusCode {
 	// helper by middleware.Distribute with 503 "no channel available", the same
 	// way /v1/chat/completions behaves, so no check is duplicated here.
 	meta.IsStream = request.Stream
+
+	// If the upstream does not natively implement the Responses API, convert the
+	// request to Chat Completions and delegate to the existing chat pipeline.
+	if !upstreamSupportsResponses(meta) {
+		return relayResponsesConvertToChat(c, &request)
+	}
 
 	// Map the model name the same way the text path does, then rewrite it in the
 	// forwarded body so the upstream receives the mapped name.
@@ -215,7 +322,13 @@ func relayResponsesCreate(c *gin.Context) *relaymodel.ErrorWithStatusCode {
 		return respErr
 	}
 
-	go postConsumeQuota(ctx, usage, meta, billingRequest, ratio, preConsumedQuota, modelRatio, groupRatio, false)
+	// post-consume quota — honor the same test synchronous hook as the
+	// chat path (see RelayTextHelper) so integration tests stay race-free.
+	if PostConsumeQuotaSynchronous {
+		postConsumeQuota(ctx, usage, meta, billingRequest, ratio, preConsumedQuota, modelRatio, groupRatio, false)
+	} else {
+		go postConsumeQuota(ctx, usage, meta, billingRequest, ratio, preConsumedQuota, modelRatio, groupRatio, false)
+	}
 	return nil
 }
 

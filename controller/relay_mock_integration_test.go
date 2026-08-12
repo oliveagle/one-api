@@ -2,17 +2,23 @@ package controller
 
 // End-to-end integration tests for the mock channel.
 //
-// These tests spin up a real gin engine wired with the production
-// middleware chain — TokenAuth -> Distribute -> controller.Relay -> (relay
-// pipeline) -> mock.Adaptor — and drive it with httptest. The mock
-// adaptor synthesizes responses in-process, so the whole relay pipeline
-// (quota pre/post-consume, model mapping, streaming render, error
-// handling, routing) is exercised without any network dependency.
+// CATEGORY 2 — chat -> chat (passthrough).
 //
-// The harness lives in setupMockRelayStack below. Each test seeds a
-// User + Token + Channel(Type=channeltype.Mock) into a fresh SQLite DB,
-// flips config.MemoryCacheEnabled + InitChannelCache so Distribute can
-// find the channel, then fires HTTP requests at the gin engine.
+// Client speaks Chat Completions; the channel's upstream also speaks
+// Chat Completions. These tests pin the legacy/compat data-flow path
+// and the mock channel's OpenAI Chat shapes (non-stream, stream,
+// tool_calls, errors, auth/routing failures, quota). See
+// relay_mock_categories_test.go for the other two categories
+// (responses->responses and responses->chat) and AGENTS.md for the
+// three-category testing model.
+//
+// The harness (setupMockRelayStack / setupMockRelayStackWithOptions)
+// spins up a real gin engine wired with the production middleware chain
+// — TokenAuth -> Distribute -> controller.Relay -> (relay pipeline) ->
+// mock.Adaptor — and drives it with httptest. The mock adaptor
+// synthesizes responses in-process, so the whole relay pipeline (quota
+// pre/post-consume, model mapping, streaming render, error handling,
+// routing) is exercised without any network dependency.
 //
 // Behavior the mock channel should exhibit is selected per-request via
 // the X-Mock-Behavior header (see relay/adaptor/mock/adaptor.go).
@@ -53,13 +59,34 @@ const mockModelName = "mock-gpt-4o"
 // to arrive at this bare key. See middleware/auth.go.
 const seedTokenKey = "test"
 
-// setupMockRelayStack builds a production-shaped gin engine backed by a
-// fresh SQLite DB seeded with a User, Token, and a Mock channel. It
-// returns the engine ready to serve httptest requests.
+// mockStackOptions configures setupMockRelayStackWithOptions. The
+// zero value produces a chat-only stack (the original behavior).
+type mockStackOptions struct {
+	// supportResponses seeds the channel with config.support_responses
+	// =true so POST /v1/responses is forwarded as native Responses
+	// passthrough. When false, /v1/responses requests are converted to
+	// Chat Completions by relayResponsesCreate.
+	supportResponses bool
+	// registerResponsesRoute adds POST /v1/responses to the gin engine
+	// in addition to /v1/chat/completions. Tests that hit the
+	// Responses endpoint must set this.
+	registerResponsesRoute bool
+}
+
+// setupMockRelayStack is the convenience wrapper for chat-only tests
+// (test category 2). It mirrors the original signature.
+func setupMockRelayStack(t *testing.T) *gin.Engine {
+	t.Helper()
+	return setupMockRelayStackWithOptions(t, mockStackOptions{})
+}
+
+// setupMockRelayStackWithOptions builds a production-shaped gin engine
+// backed by a fresh SQLite DB seeded with a User, Token, and a Mock
+// channel. It returns the engine ready to serve httptest requests.
 //
 // The cleanup (Redis flag, MemoryCacheEnabled, gin mode) is registered
 // via t.Cleanup so tests are hermetic and parallel-safe.
-func setupMockRelayStack(t *testing.T) *gin.Engine {
+func setupMockRelayStackWithOptions(t *testing.T, opts mockStackOptions) *gin.Engine {
 	t.Helper()
 
 	// 1. Hermetic infra: disable Redis, fresh SQLite with all models.
@@ -118,6 +145,14 @@ func setupMockRelayStack(t *testing.T) *gin.Engine {
 	// adjacency. A bare DB.Create without abilities would leave the
 	// channel invisible to the router.
 	baseURL := mockChannelBaseURL
+	channelCfg := ""
+	if opts.supportResponses {
+		// Opt the channel into native Responses passthrough so
+		// relayResponsesCreate forwards the body untouched instead of
+		// converting to Chat Completions. The third test category
+		// (responses->chat) leaves this false to exercise conversion.
+		channelCfg = `{"support_responses":true}`
+	}
 	channel := &model.Channel{
 		Id:      1,
 		Type:    channeltype.Mock,
@@ -127,6 +162,7 @@ func setupMockRelayStack(t *testing.T) *gin.Engine {
 		Models:  mockModelName,
 		BaseURL: &baseURL,
 		Key:     "not-used-by-mock",
+		Config:  channelCfg,
 	}
 	if err := channel.Insert(); err != nil {
 		t.Fatalf("seed channel: %v", err)
@@ -158,6 +194,12 @@ func setupMockRelayStack(t *testing.T) *gin.Engine {
 	relayGroup.Use(middleware.TokenAuth(), middleware.Distribute())
 	{
 		relayGroup.POST("/chat/completions", Relay)
+		if opts.registerResponsesRoute {
+			// The Responses API: POST creates, GET/DELETE/etc are CRUD.
+			// Tests drive the create path; the others route to the same
+			// handler and dispatch internally on method.
+			relayGroup.POST("/responses", Relay)
+		}
 	}
 	return r
 }
@@ -167,8 +209,14 @@ func setupMockRelayStack(t *testing.T) *gin.Engine {
 // X-Mock-Behavior header, and a JSON body. Returns the recorder.
 func doRelayRequest(t *testing.T, r *gin.Engine, authHeader, behavior, body string) *httptest.ResponseRecorder {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
-		strings.NewReader(body))
+	return doRelayRequestTo(t, r, "/v1/chat/completions", authHeader, behavior, body)
+}
+
+// doRelayRequestTo is the path-parameterized core of doRelayRequest.
+// Used by Responses-endpoint tests which POST to /v1/responses.
+func doRelayRequestTo(t *testing.T, r *gin.Engine, path, authHeader, behavior, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	if authHeader != "" {
 		req.Header.Set("Authorization", authHeader)
