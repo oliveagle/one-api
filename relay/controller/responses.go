@@ -29,11 +29,22 @@ import (
 // untouched, so stateful fields (previous_response_id, store) and server-side
 // tools keep working. See docs/adr/0001-openai-responses-api-passthrough.md.
 type ResponsesRequest struct {
-	Model        string `json:"model"`
-	Stream       bool   `json:"stream,omitempty"`
-	Input        any    `json:"input,omitempty"`
-	Instructions string `json:"instructions,omitempty"`
-	MaxOutput    int    `json:"max_output_tokens,omitempty"`
+	Model        string         `json:"model"`
+	Stream       bool           `json:"stream,omitempty"`
+	Input        any            `json:"input,omitempty"`
+	Instructions string         `json:"instructions,omitempty"`
+	MaxOutput    int            `json:"max_output_tokens,omitempty"`
+	// Tools carries the raw tools array from the Responses API request. The
+	// schema mirrors OpenAI ChatCompletions (type=function, function={name,...})
+	// so the same struct can be re-emitted as-is when forwarding to a chat
+	// upstream. Anything exotic (mcp_tool, etc.) round-trips as RawMessage
+	// and the upstream is the one that has to interpret it.
+	Tools []relaymodel.Tool `json:"tools,omitempty"`
+	// ToolChoice is the same shape as ChatCompletions: "auto" / "none" /
+	// "required" or an object like {"type":"function","function":{"name":"f"}}.
+	// We keep it as raw JSON so anything the Responses API ever adds is
+	// preserved.
+	ToolChoice any `json:"tool_choice,omitempty"`
 }
 
 // ResponsesUsage mirrors the Responses API usage block. The field names differ
