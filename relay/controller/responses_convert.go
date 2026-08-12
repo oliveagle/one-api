@@ -394,6 +394,63 @@ func flattenContentToText(content any) string {
 	}
 }
 
+// injectReasoningContent injects the extracted reasoning text into the last
+// assistant message in the messages slice and normalizes all thinking-mode
+// turns.
+//
+// The function performs three steps:
+//
+//  1. Find the last role=assistant message. If reasoning is non-empty, its
+//     reasoning_content field is set to the reasoning text.
+//
+//  2. Delegate to NormalizeReasoningContent which walks every assistant message
+//     with tool_calls and, if reasoning_content is still nil, injects
+//     ReasoningContentPlaceholder ("Tool execution in progress") so upstreams
+//     that require thinking-mode back-pass never reject the request.
+//
+//  3. Returns true if any message was modified (either by the injection or by
+//     NormalizeReasoningContent).
+//
+// The pointer-to-slice signature allows in-place modification of the caller's
+// message array without copying.
+func injectReasoningContent(reasoning string, messages *[]relaymodel.Message) bool {
+	if messages == nil || len(*messages) == 0 {
+		return false
+	}
+
+	modified := false
+
+	// Step 1: find the last assistant message and inject reasoning_content.
+	lastAssistantIdx := -1
+	for i := len(*messages) - 1; i >= 0; i-- {
+		if (*messages)[i].Role == role.Assistant {
+			lastAssistantIdx = i
+			break
+		}
+	}
+	if lastAssistantIdx == -1 {
+		return false
+	}
+
+	if reasoning != "" {
+		msg := &(*messages)[lastAssistantIdx]
+		if msg.ReasoningContent == nil {
+			msg.ReasoningContent = reasoning
+			modified = true
+		}
+	}
+
+	// Step 2: normalize all thinking-mode turns using the existing helper.
+	// A thinking turn is an assistant message with tool_calls and missing
+	// reasoning_content; the helper injects the placeholder.
+	tmpReq := &relaymodel.GeneralOpenAIRequest{Messages: *messages}
+	if tmpReq.NormalizeReasoningContent() {
+		modified = true
+	}
+
+	return modified
+}
+
 // convertInstructionsToSystemMessage converts the Responses API `instructions`
 // field into a Chat Completions system message. The instructions carry the
 // top-level developer/system directive for the whole request.
