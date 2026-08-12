@@ -8,22 +8,47 @@
 # produces a banner that no amount of refreshing can clear. Building both here
 # keeps them in lockstep, and the script refuses to finish if they disagree.
 #
+# Version format: v<semver>-<short-sha>[-dirty]
+#   e.g. v0.0.2-0e6a4b7       (release branch / clean tree)
+#        v0.0.2-0e6a4b7-dirty (release branch / uncommitted changes)
+#
+# The <semver> comes from the VERSION file in the repo root. If VERSION is
+# empty (the default on main), the script falls back to `dev-<short-sha>` so
+# ad-hoc local builds still produce a meaningful string. The short sha is
+# always derived from `git rev-parse --short HEAD` at build time.
+#
 # Usage:
-#   ./build-local.sh                  # version = dev-<short sha>[-dirty]
-#   ./build-local.sh v1.2.3           # explicit version
+#   ./build-local.sh                  # uses VERSION + git HEAD
 #   THEMES="default berry" ./build-local.sh
 #
 set -euo pipefail
 
 cd "$(dirname "$0")"
 
-VERSION="${1:-}"
-if [ -z "$VERSION" ]; then
-  sha="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
-  VERSION="dev-${sha}"
-  if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
-    VERSION="${VERSION}-dirty"
-  fi
+# Resolve the short git sha once. We add it unconditionally so every build
+# reports which commit it was produced from, even on tag-only release branches.
+sha="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+
+# Read the semver from the VERSION file. The file is intentionally empty on
+# main so casual builds don't claim a release number; we fall back to
+# `dev-<sha>` in that case so the version is still unique per commit.
+semver=""
+if [ -f VERSION ]; then
+  semver="$(tr -d '[:space:]' < VERSION)"
+fi
+
+dirty=""
+if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
+  dirty="-dirty"
+fi
+
+if [ -n "$semver" ]; then
+  # Strip a leading 'v' if the file already has one (e.g. an operator wrote
+  # "v0.0.2" instead of "0.0.2"); we always add a single 'v' ourselves.
+  semver="${semver#v}"
+  VERSION="v${semver}-${sha}${dirty}"
+else
+  VERSION="dev-${sha}${dirty}"
 fi
 
 # Only the themes actually rebuilt here will match the binary. "default" is what
