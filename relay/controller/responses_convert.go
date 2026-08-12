@@ -52,11 +52,16 @@ type ResponseFunctionCallOutputItem struct {
 
 // ResponseReasoningItem represents an internal reasoning step. Reasoning items
 // are converted to assistant messages with reasoning_content populated.
+//
+// Content holds the reasoning content blocks (e.g. type "reasoning_text").
+// EncryptedContent carries an opaque encrypted payload that some providers
+// emit instead of plaintext content.
 type ResponseReasoningItem struct {
-	Type    ResponseItemType `json:"type"`
-	ID      string           `json:"id,omitempty"`
-	Summary any              `json:"summary,omitempty"`
-	Content any              `json:"content,omitempty"`
+	Type             ResponseItemType `json:"type"`
+	ID               string           `json:"id,omitempty"`
+	Summary          any              `json:"summary,omitempty"`
+	Content          any              `json:"content,omitempty"`
+	EncryptedContent string           `json:"encrypted_content,omitempty"`
 }
 
 // parseInputItems parses the `input` field of a Responses API request into a
@@ -276,6 +281,83 @@ func extractReasoningText(item ResponseReasoningItem) string {
 	}
 	if item.Content != nil {
 		if text := flattenContentToText(item.Content); text != "" {
+			return text
+		}
+	}
+	return ""
+}
+
+// ReasoningTextBlockType is the content block type that carries plaintext
+// reasoning in a Reasoning item's content array.
+const ReasoningTextBlockType = "reasoning_text"
+
+// extractReasoningContent extracts the reasoning text from a Responses API
+// Reasoning item for the reasoning_content field.
+//
+// The plaintext reasoning lives in the item's content array under blocks of
+// type "reasoning_text"; their text fields are concatenated in order. When the
+// content array yields no text, the opaque encrypted_content payload is used as
+// a fallback so the reasoning turn is still visible to the upstream.
+//
+// Returns an error if the item is not a Reasoning item. Returns an empty
+// string when no reasoning text is available.
+func extractReasoningContent(item ResponseReasoningItem) (string, error) {
+	if item.Type != ResponseItemTypeReasoning {
+		return "", fmt.Errorf("item is not a reasoning item: %q", item.Type)
+	}
+
+	if text := flattenReasoningTextBlocks(item.Content); text != "" {
+		return text, nil
+	}
+	if item.EncryptedContent != "" {
+		return item.EncryptedContent, nil
+	}
+	return "", nil
+}
+
+// flattenReasoningTextBlocks concatenates the text of every content block of
+// type ReasoningTextBlockType. Content may be a plain string, a single content
+// block object, or an array of content blocks. Non-reasoning blocks (e.g.
+// "summary_text") are ignored.
+func flattenReasoningTextBlocks(content any) string {
+	switch v := content.(type) {
+	case string:
+		return v
+	case []any:
+		var text string
+		for _, block := range v {
+			if m, ok := block.(map[string]any); ok {
+				if part := textFromBlock(m); part != "" {
+					text += part
+				}
+			}
+		}
+		return text
+	default:
+		if block, ok := content.(map[string]any); ok {
+			return textFromBlock(block)
+		}
+		// Marshal back to JSON to handle json.RawMessage or other types.
+		raw, err := json.Marshal(content)
+		if err != nil {
+			return ""
+		}
+		var block map[string]any
+		if err := json.Unmarshal(raw, &block); err == nil {
+			return textFromBlock(block)
+		}
+		return ""
+	}
+}
+
+// textFromBlock returns the text of a single content block if it is of type
+// ReasoningTextBlockType, otherwise an empty string.
+func textFromBlock(block map[string]any) string {
+	if block == nil {
+		return ""
+	}
+	if t, ok := block["type"].(string); ok && t == ReasoningTextBlockType {
+		if text, ok := block["text"].(string); ok {
 			return text
 		}
 	}
