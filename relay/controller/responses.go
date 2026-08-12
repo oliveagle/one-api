@@ -212,6 +212,13 @@ func convertResponsesRequestToChat(c *gin.Context, request *ResponsesRequest) ([
 	}
 	// Log the converted Chat Completions body at debug level.
 	logger.Debugf(ctx, "converted Chat Completions request: %s", string(body))
+	// The fast path in getRequestBody returns c.Request.Body verbatim
+	// without re-running the OpenAI adaptor's ConvertRequest. That fast
+	// path skips per-channel tool schema adaptations (e.g. opencode-go's
+	// flat tools shape), so the upstream would see the standard OpenAI
+	// shape and reject. We set the modified flag here so the slow path
+	// runs, producing the per-channel adjusted body.
+	c.Set(ctxkey.ConvertedFromResponses, true)
 
 	// Remember the original body/path so they can be restored afterwards. The
 	// body was cached by UnmarshalBodyReusable when relayResponsesCreate parsed

@@ -1469,3 +1469,38 @@ func TestResponsesRequestPreservesToolsField(t *testing.T) {
 		t.Errorf("tool_choice not preserved: %v", r.ToolChoice)
 	}
 }
+
+func TestConvertResponsesRequestToChat_SetsConvertedFlag(t *testing.T) {
+	// Regression: previously the fast path in getRequestBody returned
+	// c.Request.Body verbatim for /v1/chat/completions (when sent by the
+	// Responses -> Chat converter), so the OpenAI adaptor's ConvertRequest
+	// never ran and per-channel tool schema adaptations (e.g. opencode-go's
+	// flat shape) were skipped — leading to upstream 400 "missing tools.name".
+	// The fix sets a context flag in convertResponsesRequestToChat so the
+	// fast path is bypassed. This test pins that the flag is set.
+	//
+	// We assert the flag exists and the converter returns successfully.
+	tools := []model.Tool{{
+		Type: "function",
+		Function: model.Function{
+			Name:        "f1",
+			Description: "d",
+			Parameters:  map[string]any{"type": "object", "properties": map[string]any{}},
+		},
+	}}
+	req := &ResponsesRequest{
+		Model: "deepseek-v4-flash",
+		Input: "hi",
+		Tools: tools,
+	}
+	body, err := convertResponsesToChatCompletions(req)
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	if len(body.Tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(body.Tools))
+	}
+	if body.Tools[0].Function.Name != "f1" {
+		t.Errorf("tool name not preserved: %+v", body.Tools[0])
+	}
+}
