@@ -312,8 +312,47 @@ Render 可以直接部署 docker 镜像，不需要 fork 仓库：https://dashbo
 </div>
 </details>
 
+## Agent install serving (one-click Codex profile)
+
+任意一台 LAN/公网机器只要能访问这个 one-api，就可以 `curl | bash` 拉起 codex + one-api 的 profile，不需要再装 Caddy、不需要再起单独的静态文件服务。
+
+服务端（你已经部署好的 one-api）：
+
+- 默认 `AGENT_INSTALL_DIR=./agent-install`（仓库自带 `install.sh`）。
+- one-api 启动时自动以公开静态文件方式 serve 该目录到 `/agent-install/*`（**无需登录**）。
+- 想关掉就 `AGENT_INSTALL_DIR=""`；想换目录就把 `AGENT_INSTALL_DIR=/path/to/dir` 指向你自己的安装包目录。
+- 目录不存在/不可读时只打 warn，不 panic，路由也不注册。
+
+客户端（任意联网机器）：
+
+```sh
+# 最简单 — 交互式
+curl -fsSL http://<one-api-host>:<port>/agent-install/install.sh \
+    | ONEAPI_BASE_URL=http://<one-api-host>:<port> bash
+
+# 注入 token — 非交互
+curl -fsSL http://<one-api-host>:<port>/agent-install/install.sh \
+    | ONEAPI_BASE_URL=http://<one-api-host>:<port> \
+      ONEAPI_BEARER_TOKEN='sk-cp-YOUR_TOKEN' \
+      ONEAPI_NONINTERACTIVE=1 \
+      bash
+```
+
+`install.sh` 支持两种模式：
+
+- **tarball 模式**（默认）：从 `<ONEAPI_BASE_URL>/agent-install/cx1-latest.tar.gz` 拉 tarball，解包后跑内置 `opt/cx1/bin/install.sh`。
+- **script-only 模式**（tarball 不存在时自动回退）：从 `<ONEAPI_BASE_URL>/agent-install/install-inner.sh` 拉一个纯脚本直接 exec。
+
+要看一眼服务起来了没：
+
+```sh
+curl -fsSI http://<one-api-host>:<port>/agent-install/install.sh   # 应回 200 + text/plain
+curl -fsS  http://<one-api-host>:<port>/agent-install/MANIFEST     # 应回目录清单
+```
+
 ## 配置
 系统本身开箱即用。
+
 
 你可以通过设置环境变量或者命令行参数进行配置。
 
