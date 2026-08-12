@@ -454,6 +454,164 @@ func TestConvertReasoningItem_Empty(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// extractReasoningContent
+// ---------------------------------------------------------------------------
+
+func TestExtractReasoningContent_WrongType(t *testing.T) {
+	item := ResponseReasoningItem{Type: ResponseItemTypeMessage}
+	if _, err := extractReasoningContent(item); err == nil {
+		t.Fatal("expected error for non-reasoning type")
+	}
+}
+
+func TestExtractReasoningContent_Empty(t *testing.T) {
+	item := ResponseReasoningItem{Type: ResponseItemTypeReasoning, ID: "r1"}
+	got, err := extractReasoningContent(item)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if got != "" {
+		t.Errorf("got %q, want empty", got)
+	}
+}
+
+func TestExtractReasoningContent_FromContentBlocks(t *testing.T) {
+	item := ResponseReasoningItem{
+		Type: ResponseItemTypeReasoning,
+		ID:   "r2",
+		Content: []any{
+			map[string]any{"type": "reasoning_text", "text": "step 1..."},
+			map[string]any{"type": "reasoning_text", "text": "step 2..."},
+		},
+	}
+	got, err := extractReasoningContent(item)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if got != "step 1...step 2..." {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestExtractReasoningContent_IgnoresSummaryText(t *testing.T) {
+	// summary_text blocks must NOT be picked up by reasoning extraction.
+	item := ResponseReasoningItem{
+		Type: ResponseItemTypeReasoning,
+		ID:   "r3",
+		Content: []any{
+			map[string]any{"type": "summary_text", "text": "summary content"},
+			map[string]any{"type": "reasoning_text", "text": "actual reasoning"},
+		},
+	}
+	got, err := extractReasoningContent(item)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if got != "actual reasoning" {
+		t.Errorf("got %q, want only reasoning_text content", got)
+	}
+}
+
+func TestExtractReasoningContent_StringContent(t *testing.T) {
+	item := ResponseReasoningItem{
+		Type:    ResponseItemTypeReasoning,
+		ID:      "r4",
+		Content: "plaintext reasoning body",
+	}
+	got, err := extractReasoningContent(item)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if got != "plaintext reasoning body" {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestExtractReasoningContent_SingleBlock(t *testing.T) {
+	item := ResponseReasoningItem{
+		Type: ResponseItemTypeReasoning,
+		ID:   "r5",
+		Content: map[string]any{
+			"type": "reasoning_text",
+			"text": "single block reasoning",
+		},
+	}
+	got, err := extractReasoningContent(item)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if got != "single block reasoning" {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestExtractReasoningContent_FallbackToEncryptedContent(t *testing.T) {
+	// content array has no reasoning_text; encrypted_content must be used.
+	item := ResponseReasoningItem{
+		Type:             ResponseItemTypeReasoning,
+		ID:               "r6",
+		Content:          []any{map[string]any{"type": "summary_text", "text": "summary"}},
+		EncryptedContent: "encrypted_blob_payload",
+	}
+	got, err := extractReasoningContent(item)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if got != "encrypted_blob_payload" {
+		t.Errorf("got %q, want encrypted fallback", got)
+	}
+}
+
+func TestExtractReasoningContent_ContentPreferredOverEncrypted(t *testing.T) {
+	// When both are present, plaintext content wins.
+	item := ResponseReasoningItem{
+		Type:             ResponseItemTypeReasoning,
+		ID:               "r7",
+		Content:          []any{map[string]any{"type": "reasoning_text", "text": "visible"}},
+		EncryptedContent: "should_not_be_used",
+	}
+	got, err := extractReasoningContent(item)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if got != "visible" {
+		t.Errorf("got %q, want plaintext content to win", got)
+	}
+}
+
+func TestExtractReasoningContent_NoBlocksAndNoEncrypted(t *testing.T) {
+	item := ResponseReasoningItem{
+		Type: ResponseItemTypeReasoning,
+		ID:   "r8",
+		Content: []any{
+			map[string]any{"type": "summary_text", "text": "summary only"},
+		},
+	}
+	got, err := extractReasoningContent(item)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if got != "" {
+		t.Errorf("got %q, want empty", got)
+	}
+}
+
+func TestExtractReasoningContent_NilContent(t *testing.T) {
+	item := ResponseReasoningItem{
+		Type:             ResponseItemTypeReasoning,
+		ID:               "r9",
+		EncryptedContent: "only_encrypted",
+	}
+	got, err := extractReasoningContent(item)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if got != "only_encrypted" {
+		t.Errorf("got %q", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // convertInstructionsToSystemMessage
 // ---------------------------------------------------------------------------
 
