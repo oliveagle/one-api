@@ -82,3 +82,54 @@ reality and silently breaks coding agents.
 - **`config.ApproximateTokenEnabled`** — the harness sets this so token
   counting doesn't depend on the tiktoken encoder (which downloads BPE
   files on first use — a network dependency).
+
+## Provider-specific tests (real adaptors)
+
+The mock-channel tests above verify the *relay pipeline* but bypass the
+real adaptor factory (they hardcode `apitype.Mock`). To catch bugs in a
+**specific provider's adaptor** — Azure's deployment URL, OpenRouter's
+attribution headers, the dot-stripping in Azure model names, etc. — use
+the provider-specific harness in
+`controller/relay_provider_integration_test.go`.
+
+### How it works
+
+`setupProviderStack(t, opts)` seeds a channel with a **real channeltype**
+(e.g. `channeltype.Azure`), so `relay.GetAdaptor` returns the production
+adaptor. The outbound HTTP is intercepted by `testutil.MockTransport`,
+which is installed as `client.HTTPClient`. The test registers a handler
+that:
+
+1. **Captures the request** the adaptor built (URL path, query, headers)
+   so you can assert on the provider-specific adaptation.
+2. **Returns a canned response** so no network is needed.
+
+This is the layer that catches "the Azure URL builder drifted" or
+"OpenRouter stopped sending attribution headers" — regressions the mock
+channel cannot surface.
+
+### Adding a provider test
+
+1. Pick the `channeltype` constant and the base URL the provider expects.
+2. Call `setupProviderStack` with `providerStackOptions{channelType, baseURL, models, configJSON}`.
+3. Register a `MockTransport.Match` handler on the URL prefix the adaptor
+   will build. Inside the handler, assert on `r.URL.Path`,
+   `r.Header.Get("Authorization")` / `"api-key"`, etc.
+4. POST a chat request via `doRelayRequest` and assert the response comes
+   back parsed correctly (the real adaptor's `DoResponse` handles it).
+
+### Provider tiers (divergence from OpenAI baseline)
+
+- **Tier 1 (OpenAI passthrough)**: `ConvertRequest` returns the request
+  unchanged, reuses `openai.Handler`. E.g. plain OpenAI, Zhipu. The
+  `TestProvider_OpenAI_StandardURLAndAuth` test is the baseline.
+- **Tier 2 (OpenAI-compatible with quirks)**: same `openai.Adaptor` but
+  branches on `channeltype` in `GetRequestURL` / `SetupRequestHeader`.
+  E.g. Azure (deployment URL + `api-key` header), OpenRouter (extra
+  attribution headers), Minimax/Doubao/Novita (URL path tweaks). **This
+  is where provider tests add the most value** — each branch is a
+  potential regression point.
+- **Tier 3 (fully proprietary format)**: own `model.go` + real
+  conversion (Anthropic, Gemini, Ali, Baidu, Tencent, Cohere, ...). Not
+  yet covered by provider tests; adding them requires canned fixtures of
+  the provider's proprietary response format.
