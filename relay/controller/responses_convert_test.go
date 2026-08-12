@@ -1223,3 +1223,181 @@ func TestConvertResponsesInputToChatMessages_UniqueIDsAcrossBatch(t *testing.T) 
 		t.Errorf("expected %d unique IDs, got %d (collisions: %v)", len(msgs), len(seen), seen)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// convertResponsesToChatCompletions (full pipeline integration)
+// ---------------------------------------------------------------------------
+
+func TestConvertResponsesToChatCompletions_NilRequest(t *testing.T) {
+	if _, err := convertResponsesToChatCompletions(nil); err == nil {
+		t.Fatal("expected error for nil request")
+	}
+}
+
+func TestConvertResponsesToChatCompletions_StringInput(t *testing.T) {
+	req := &ResponsesRequest{Model: "gpt-4o", Input: "hello", Instructions: "be concise"}
+	chat, err := convertResponsesToChatCompletions(req)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if chat.Model != "gpt-4o" {
+		t.Errorf("model = %q, want gpt-4o", chat.Model)
+	}
+	// system (instructions) + user (input string)
+	if len(chat.Messages) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(chat.Messages))
+	}
+	if chat.Messages[0].Role != "system" || chat.Messages[0].Content != "be concise" {
+		t.Errorf("msg[0] = %+v, want system message with instructions", chat.Messages[0])
+	}
+	if chat.Messages[1].Role != "user" {
+		t.Errorf("msg[1] role = %q, want user", chat.Messages[1].Role)
+	}
+	// every message must carry an id
+	for i, msg := range chat.Messages {
+		if msg.ID == "" {
+			t.Errorf("msg[%d] missing id", i)
+		}
+	}
+}
+
+func TestConvertResponsesToChatCompletions_NoInstructions(t *testing.T) {
+	req := &ResponsesRequest{Model: "gpt-4o", Input: "hello"}
+	chat, err := convertResponsesToChatCompletions(req)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if len(chat.Messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(chat.Messages))
+	}
+	if chat.Messages[0].Role != "user" {
+		t.Errorf("role = %q, want user", chat.Messages[0].Role)
+	}
+}
+
+func TestConvertResponsesToChatCompletions_FullConversation(t *testing.T) {
+	req := &ResponsesRequest{
+		Model: "gpt-4o",
+		Input: []any{
+			map[string]any{"type": "message", "role": "user", "content": "What's the weather?"},
+			map[string]any{"type": "function_call", "call_id": "call_1", "name": "get_weather", "arguments": `{"city":"SF"}`},
+			map[string]any{"type": "function_call_output", "call_id": "call_1", "output": "Sunny, 72F"},
+		},
+		Instructions: "You are a weather bot",
+	}
+	chat, err := convertResponsesToChatCompletions(req)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	// system + user + assistant(tool_calls) + tool = 4
+	if len(chat.Messages) != 4 {
+		t.Fatalf("expected 4 messages, got %d", len(chat.Messages))
+	}
+	if chat.Messages[0].Role != "system" {
+		t.Errorf("msg[0] role = %q, want system", chat.Messages[0].Role)
+	}
+	if chat.Messages[1].Role != "user" {
+		t.Errorf("msg[1] role = %q, want user", chat.Messages[1].Role)
+	}
+	if chat.Messages[2].Role != "assistant" || len(chat.Messages[2].ToolCalls) != 1 {
+		t.Errorf("msg[2] = %+v, want assistant with tool_calls", chat.Messages[2])
+	}
+	// assistant with tool_calls must carry reasoning_content (thinking turn)
+	rc, ok := chat.Messages[2].ReasoningContent.(string)
+	if !ok || rc != model.ReasoningContentPlaceholder {
+		t.Errorf("msg[2] reasoning_content = %v, want placeholder", chat.Messages[2].ReasoningContent)
+	}
+	if chat.Messages[3].Role != "tool" || chat.Messages[3].ToolCallId != "call_1" {
+		t.Errorf("msg[3] = %+v, want tool message with call_id", chat.Messages[3])
+	}
+	// all ids unique
+	seen := make(map[string]bool, len(chat.Messages))
+	for i, msg := range chat.Messages {
+		if msg.ID == "" {
+			t.Errorf("msg[%d] missing id", i)
+		}
+		if seen[msg.ID] {
+			t.Errorf("duplicate id %q", msg.ID)
+		}
+		seen[msg.ID] = true
+	}
+}
+
+func TestConvertResponsesToChatCompletions_ReasoningInjectedIntoAssistant(t *testing.T) {
+	req := &ResponsesRequest{
+		Model: "gpt-4o",
+		Input: []any{
+			map[string]any{"type": "message", "role": "user", "content": "Solve this"},
+			map[string]any{"type": "reasoning", "id": "r1", "content": []any{
+				map[string]any{"type": "reasoning_text", "text": "step by step reasoning"},
+			}},
+			map[string]any{"type": "message", "role": "assistant", "content": "The answer is 42"},
+		},
+	}
+	chat, err := convertResponsesToChatCompletions(req)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	// user + assistant = 2 (reasoning item is not emitted standalone; its text
+	// is injected into the assistant message that follows)
+	if len(chat.Messages) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(chat.Messages))
+	}
+	assistant := chat.Messages[1]
+	if assistant.Role != "assistant" {
+		t.Errorf("role = %q, want assistant", assistant.Role)
+	}
+	rc, ok := assistant.ReasoningContent.(string)
+	if !ok || rc != "step by step reasoning" {
+		t.Errorf("reasoning_content = %v, want extracted reasoning text", assistant.ReasoningContent)
+	}
+}
+
+func TestConvertResponsesToChatCompletions_ReasoningWithoutFollowingAssistant(t *testing.T) {
+	// Reasoning as the last item: injectReasoningContent finds no assistant
+	// message, so a standalone assistant message with reasoning must be emitted.
+	req := &ResponsesRequest{
+		Model: "gpt-4o",
+		Input: []any{
+			map[string]any{"type": "message", "role": "user", "content": "Think about it"},
+			map[string]any{"type": "reasoning", "id": "r1", "content": []any{
+				map[string]any{"type": "reasoning_text", "text": "final reasoning text"},
+			}},
+		},
+	}
+	chat, err := convertResponsesToChatCompletions(req)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	// user + standalone assistant(reasoning) = 2
+	if len(chat.Messages) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(chat.Messages))
+	}
+	rc, ok := chat.Messages[1].ReasoningContent.(string)
+	if !ok || rc != "final reasoning text" {
+		t.Errorf("reasoning_content = %v, want standalone assistant reasoning", chat.Messages[1].ReasoningContent)
+	}
+}
+
+func TestConvertResponsesToChatCompletions_StreamCopied(t *testing.T) {
+	req := &ResponsesRequest{Model: "gpt-4o", Stream: true, Input: "hi"}
+	chat, err := convertResponsesToChatCompletions(req)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if !chat.Stream {
+		t.Error("stream should be copied to the chat request")
+	}
+}
+
+func TestConvertResponsesToChatCompletions_UnsupportedItemType(t *testing.T) {
+	req := &ResponsesRequest{
+		Model: "gpt-4o",
+		Input: []any{
+			map[string]any{"type": "future_item", "data": "x"},
+		},
+	}
+	if _, err := convertResponsesToChatCompletions(req); err != nil {
+		t.Fatalf("unexpected error for unknown item type: %v", err)
+	}
+}

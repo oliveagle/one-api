@@ -51,6 +51,12 @@ type ChannelConfig struct {
 	Plugin            string `json:"plugin,omitempty"`
 	VertexAIProjectID string `json:"vertex_ai_project_id,omitempty"`
 	VertexAIADC       string `json:"vertex_ai_adc,omitempty"`
+	// SupportResponses marks a channel whose upstream natively implements the
+	// OpenAI Responses API (POST /v1/responses), so requests can be passed
+	// through untouched instead of being converted to Chat Completions.
+	// Channels that do not set this flag (e.g. opencode-go) get an automatic
+	// Responses -> Chat Completions conversion in relayResponsesCreate.
+	SupportResponses bool `json:"support_responses,omitempty"`
 	// ManageKey is an account-management credential that is distinct from the
 	// relay credential stored in Channel.Key. Some upstreams (e.g. AIHubMix)
 	// refuse to expose account balance to the regular API key and require a
