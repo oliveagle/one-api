@@ -23,6 +23,18 @@ func TestProviderRegistryRegistered(t *testing.T) {
 		channeltype.AliBailian,
 		channeltype.GeminiOpenAICompatible,
 		channeltype.OpenRouter,
+		channeltype.AI360,
+		channeltype.Baichuan,
+		channeltype.DeepSeek,
+		channeltype.Groq,
+		channeltype.LingYiWanWu,
+		channeltype.Mistral,
+		channeltype.Moonshot,
+		channeltype.SiliconFlow,
+		channeltype.StepFun,
+		channeltype.TogetherAI,
+		channeltype.XAI,
+		channeltype.XunfeiV2,
 	} {
 		if _, ok := ProviderRegistry.Get(ch); !ok {
 			t.Fatalf("channel type %d not registered", ch)

@@ -7,14 +7,26 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/songquanpeng/one-api/relay/adaptor/ai360"
 	"github.com/songquanpeng/one-api/relay/adaptor/alibailian"
+	"github.com/songquanpeng/one-api/relay/adaptor/baichuan"
 	"github.com/songquanpeng/one-api/relay/adaptor/baiduv2"
+	"github.com/songquanpeng/one-api/relay/adaptor/deepseek"
 	"github.com/songquanpeng/one-api/relay/adaptor/doubao"
 	"github.com/songquanpeng/one-api/relay/adaptor/geminiv2"
+	"github.com/songquanpeng/one-api/relay/adaptor/groq"
+	"github.com/songquanpeng/one-api/relay/adaptor/lingyiwanwu"
 	"github.com/songquanpeng/one-api/relay/adaptor/minimax"
+	"github.com/songquanpeng/one-api/relay/adaptor/mistral"
+	"github.com/songquanpeng/one-api/relay/adaptor/moonshot"
 	"github.com/songquanpeng/one-api/relay/adaptor/novita"
 	"github.com/songquanpeng/one-api/relay/adaptor/openrouter"
 	"github.com/songquanpeng/one-api/relay/adaptor/provider"
+	"github.com/songquanpeng/one-api/relay/adaptor/siliconflow"
+	"github.com/songquanpeng/one-api/relay/adaptor/stepfun"
+	"github.com/songquanpeng/one-api/relay/adaptor/togetherai"
+	"github.com/songquanpeng/one-api/relay/adaptor/xai"
+	"github.com/songquanpeng/one-api/relay/adaptor/xunfeiv2"
 	"github.com/songquanpeng/one-api/relay/channeltype"
 	"github.com/songquanpeng/one-api/relay/meta"
 	"github.com/songquanpeng/one-api/relay/relaymode"
@@ -85,6 +97,18 @@ func buildProviderRegistry() *provider.Registry {
 		RequestURL:  defaultRequestURL,
 		SetupHeader: openRouterSetupHeader,
 	})
+	r.MustRegister(provider.Descriptor{ChannelType: channeltype.AI360, Name: "360", Models: ai360.ModelList, RequestURL: defaultRequestURL, SetupHeader: defaultBearerHeader})
+	r.MustRegister(provider.Descriptor{ChannelType: channeltype.Baichuan, Name: "baichuan", Models: baichuan.ModelList, RequestURL: defaultRequestURL, SetupHeader: defaultBearerHeader})
+	r.MustRegister(provider.Descriptor{ChannelType: channeltype.DeepSeek, Name: "deepseek", Models: deepseek.ModelList, RequestURL: defaultRequestURL, SetupHeader: defaultBearerHeader})
+	r.MustRegister(provider.Descriptor{ChannelType: channeltype.Groq, Name: "groq", Models: groq.ModelList, RequestURL: defaultRequestURL, SetupHeader: defaultBearerHeader})
+	r.MustRegister(provider.Descriptor{ChannelType: channeltype.LingYiWanWu, Name: "lingyiwanwu", Models: lingyiwanwu.ModelList, RequestURL: defaultRequestURL, SetupHeader: defaultBearerHeader})
+	r.MustRegister(provider.Descriptor{ChannelType: channeltype.Mistral, Name: "mistralai", Models: mistral.ModelList, RequestURL: defaultRequestURL, SetupHeader: defaultBearerHeader})
+	r.MustRegister(provider.Descriptor{ChannelType: channeltype.Moonshot, Name: "moonshot", Models: moonshot.ModelList, RequestURL: defaultRequestURL, SetupHeader: defaultBearerHeader})
+	r.MustRegister(provider.Descriptor{ChannelType: channeltype.SiliconFlow, Name: "siliconflow", Models: siliconflow.ModelList, RequestURL: defaultRequestURL, SetupHeader: defaultBearerHeader})
+	r.MustRegister(provider.Descriptor{ChannelType: channeltype.StepFun, Name: "stepfun", Models: stepfun.ModelList, RequestURL: defaultRequestURL, SetupHeader: defaultBearerHeader})
+	r.MustRegister(provider.Descriptor{ChannelType: channeltype.TogetherAI, Name: "together.ai", Models: togetherai.ModelList, RequestURL: defaultRequestURL, SetupHeader: defaultBearerHeader})
+	r.MustRegister(provider.Descriptor{ChannelType: channeltype.XAI, Name: "xai", Models: xai.ModelList, RequestURL: defaultRequestURL, SetupHeader: defaultBearerHeader})
+	r.MustRegister(provider.Descriptor{ChannelType: channeltype.XunfeiV2, Name: "xunfeiv2", Models: xunfeiv2.ModelList, RequestURL: defaultRequestURL, SetupHeader: defaultBearerHeader})
 
 	// Fallback covers OpenAI, AIHubMix, OpenAICompatible, and every other
 	// channel that shares the default OpenAI URL shape.
