@@ -5,7 +5,7 @@ import "encoding/json"
 // NormalizeToolCallArguments coerces every tool_calls[].function.arguments in
 // the request to a JSON string, as the OpenAI spec requires.
 //
-// Some clients (notably the codex-cli 0.142 chat-completions emitter)
+// Some clients (notably the codex-cli 0.142 chat emitter)
 // serialise function.arguments as a JSON *object*. Every upstream we relay to
 // (dashscope, volc, minimax, ollama, ...) rejects that with a 400, so one-api
 // normalises once at the ingress so all upstreams work.
@@ -34,20 +34,23 @@ func (r *GeneralOpenAIRequest) NormalizeToolCallArguments() bool {
 	return modified
 }
 
-// RepairOrphanedToolCalls fixes conversation histories where an assistant
-// message contains tool_calls but not all of them have corresponding
-// role="tool" response messages. Upstream providers (OpenAI, Azure, etc.)
-// reject such requests with:
-//   "an assistant message with 'tool_calls' must be followed by tool messages
-//    responding to each 'tool_call_id'"
+// RepairOrphanedToolCalls fixes conversation histories where tool calls and
+// tool responses are mismatched. It handles two cases:
 //
-// For each missing tool_call_id, this function inserts a synthetic tool
-// response message after all existing tool responses for that assistant message.
-// The synthetic response has content "Tool execution was not recorded" so the
-// upstream accepts the request while the model understands the tool was not
-// actually executed.
+//  1. Missing tool responses: an assistant message contains tool_calls but not
+//     all of them have corresponding role="tool" response messages. Upstream
+//     providers reject such requests with:
+//     "an assistant message with 'tool_calls' must be followed by tool messages
+//     responding to each 'tool_call_id'"
+//     For each missing tool_call_id, a synthetic tool response is inserted.
 //
-// Returns true if any synthetic tool responses were inserted.
+//  2. Orphaned tool responses: a tool message references a tool_call_id that
+//     does not exist in any preceding assistant message. Upstream providers
+//     (notably Kimi/Moonshot) reject such requests with:
+//     "tool call id <id> is not found"
+//     Orphaned tool responses are removed.
+//
+// Returns true if any modifications were made.
 func (r *GeneralOpenAIRequest) RepairOrphanedToolCalls() bool {
 	if r == nil || len(r.Messages) == 0 {
 		return false
@@ -107,10 +110,65 @@ func (r *GeneralOpenAIRequest) RepairOrphanedToolCalls() bool {
 		i++
 	}
 
+	// Second pass: remove orphaned tool responses whose tool_call_id does not
+	// match any assistant tool_call in the conversation. This handles the case
+	// where codex-cli sends a tool response for an ID that was never issued by
+	// an assistant message (e.g. after context truncation or session resume).
+	// Upstream providers like Kimi reject these with "tool call id X is not found".
+	cleaned := make([]Message, 0, len(repaired))
+
+	// First, build the set of all valid tool_call_ids from assistant messages
+	validToolCallIDs := make(map[string]bool)
+	for _, msg := range repaired {
+		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
+			for _, tc := range msg.ToolCalls {
+				if tc.Id != "" {
+					validToolCallIDs[tc.Id] = true
+				}
+			}
+		}
+	}
+
+	// Then filter out tool messages referencing unknown IDs
+	for _, msg := range repaired {
+		if msg.Role == "tool" && msg.ToolCallId != "" && !validToolCallIDs[msg.ToolCallId] {
+			modified = true
+			continue // skip this orphaned tool response
+		}
+		cleaned = append(cleaned, msg)
+	}
+
 	if modified {
-		r.Messages = repaired
+		r.Messages = cleaned
 	}
 	return modified
+}
+
+// RemoveOrphanedToolResponses is a convenience wrapper that returns the count
+// of orphaned tool responses removed. Useful for logging.
+func (r *GeneralOpenAIRequest) CountOrphanedToolResponses() int {
+	if r == nil || len(r.Messages) == 0 {
+		return 0
+	}
+
+	validToolCallIDs := make(map[string]bool)
+	for _, msg := range r.Messages {
+		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
+			for _, tc := range msg.ToolCalls {
+				if tc.Id != "" {
+					validToolCallIDs[tc.Id] = true
+				}
+			}
+		}
+	}
+
+	count := 0
+	for _, msg := range r.Messages {
+		if msg.Role == "tool" && msg.ToolCallId != "" && !validToolCallIDs[msg.ToolCallId] {
+			count++
+		}
+	}
+	return count
 }
 
 // ReasoningContentPlaceholder is injected into assistant messages that made

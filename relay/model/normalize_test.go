@@ -277,3 +277,93 @@ func TestNormalizeReasoningContent(t *testing.T) {
 		t.Fatalf("expected no modification on second pass")
 	}
 }
+
+func TestRepairOrphanedToolCalls_RemovesOrphanedToolResponses(t *testing.T) {
+	// Simulates the codex-cli scenario where a tool response references a
+	// tool_call_id that was never issued by any assistant message.
+	// Upstream providers like Kimi reject these with "tool call id X is not found".
+	req := &GeneralOpenAIRequest{
+		Model: "test-model",
+		Messages: []Message{
+			{Role: "user", Content: "hi"},
+			{Role: "assistant", ToolCalls: []Tool{
+				{Id: "exec_command:1", Function: Function{Name: "exec_command"}},
+			}},
+			{Role: "tool", ToolCallId: "exec_command:1", Content: "result1"},
+			// This tool response references a non-existent tool_call_id
+			{Role: "tool", ToolCallId: "exec_command:2", Content: "orphaned result"},
+		},
+	}
+
+	modified := req.RepairOrphanedToolCalls()
+	if !modified {
+		t.Fatalf("expected modified=true")
+	}
+
+	// Should have 3 messages: user, assistant, tool (only exec_command:1)
+	if len(req.Messages) != 3 {
+		t.Fatalf("expected 3 messages, got %d", len(req.Messages))
+	}
+
+	// Verify the orphaned tool response was removed
+	for i, msg := range req.Messages {
+		if msg.Role == "tool" && msg.ToolCallId == "exec_command:2" {
+			t.Errorf("message %d: orphaned tool response for exec_command:2 should have been removed", i)
+		}
+	}
+}
+
+func TestRepairOrphanedToolCalls_MixedOrphanedAndValid(t *testing.T) {
+	// Test a complex scenario with both missing and orphaned tool responses
+	req := &GeneralOpenAIRequest{
+		Model: "test-model",
+		Messages: []Message{
+			{Role: "user", Content: "hi"},
+			{Role: "assistant", ToolCalls: []Tool{
+				{Id: "call_1", Function: Function{Name: "test1"}},
+				{Id: "call_2", Function: Function{Name: "test2"}},
+				{Id: "call_3", Function: Function{Name: "test3"}},
+			}},
+			{Role: "tool", ToolCallId: "call_1", Content: "result1"},
+			// call_2 is missing - should get synthetic response
+			// call_3 is missing - should get synthetic response
+			{Role: "tool", ToolCallId: "call_99", Content: "orphaned"},
+		},
+	}
+
+	modified := req.RepairOrphanedToolCalls()
+	if !modified {
+		t.Fatalf("expected modified=true")
+	}
+
+	// Should have: user, assistant, tool(call_1), tool(call_2 synthetic), tool(call_3 synthetic)
+	// The orphaned call_99 should be removed
+	if len(req.Messages) != 5 {
+		t.Fatalf("expected 5 messages, got %d", len(req.Messages))
+	}
+
+	// Verify call_99 was removed
+	for i, msg := range req.Messages {
+		if msg.Role == "tool" && msg.ToolCallId == "call_99" {
+			t.Errorf("message %d: orphaned tool response for call_99 should have been removed", i)
+		}
+	}
+
+	// Verify synthetic responses were added for call_2 and call_3
+	foundCall2 := false
+	foundCall3 := false
+	for _, msg := range req.Messages {
+		if msg.Role == "tool" && msg.ToolCallId == "call_2" && msg.Content == "Tool execution was not recorded" {
+			foundCall2 = true
+		}
+		if msg.Role == "tool" && msg.ToolCallId == "call_3" && msg.Content == "Tool execution was not recorded" {
+			foundCall3 = true
+		}
+	}
+	if !foundCall2 {
+		t.Error("expected synthetic tool response for call_2")
+	}
+	if !foundCall3 {
+		t.Error("expected synthetic tool response for call_3")
+	}
+}
