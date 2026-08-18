@@ -61,9 +61,21 @@ reality and silently breaks coding agents.
 - `relay/controller/responses.go` — `relayResponsesCreate` branches on
   `upstreamSupportsResponses(meta)`: if true, passthrough; if false,
   convert via `relayResponsesConvertToChat` → `RelayTextHelper`.
-- `relay/controller/responses_convert.go` — the conversion core
-  (`convertResponsesToChatCompletions`, input→messages mapping). Unit
-  tests in `responses_convert_test.go`.
+- `relay/controller/responses_convert.go` — the request-direction
+  conversion core (`convertResponsesToChatCompletions`, input→messages
+  mapping). Unit tests in `responses_convert_test.go`.
+- `relay/controller/responses_convert_back.go` — the response-direction
+  conversion: `chatToResponsesWriter` wraps the gin writer around
+  `RelayTextHelper` so the chat pipeline's Chat Completions output
+  (body or SSE events, including tool_calls) comes back to the client
+  in Responses format. Non-stream converts the whole body; stream
+  translates chat chunks into the Responses event vocabulary
+  (response.created / output_item.added / output_text.delta /
+  output_item.done / response.completed). Closing events are deferred
+  to `[DONE]` so the trailing include_usage chunk is captured.
+  NOTE: `convertResponsesRequestToChat` returns a restore closure the
+  caller MUST invoke only AFTER `RelayTextHelper` returns — restoring
+  earlier leaks the raw Responses body upstream.
 - `model.ChannelConfig.SupportResponses` — the per-channel opt-in flag.
 - `common/ctxkey.ConvertedFromResponses` — marks converted requests so
   the chat pipeline forces the slow (per-channel adaptor) body path.

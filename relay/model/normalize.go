@@ -181,8 +181,9 @@ func (r *GeneralOpenAIRequest) CountOrphanedToolResponses() int {
 // tool_calls. When a client (e.g. the codex-cli chat emitter) drops the
 // reasoning_content for such a turn, the upstream rejects the whole request
 // with:
-//   invalid_request_error: The `reasoning_content` in the thinking mode must
-//   be passed back to the API.
+//
+//	invalid_request_error: The `reasoning_content` in the thinking mode must
+//	be passed back to the API.
 //
 // We cannot recover the original hidden reasoning, so we inject a stable
 // placeholder. Verified against opencode-go, zhipu GLM-5.2, xiaomi, volc and

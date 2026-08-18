@@ -142,11 +142,10 @@ func TestCategory1_ResponsesToResponses_Stream(t *testing.T) {
 // The channel does NOT set support_responses, so relayResponsesCreate
 // converts the Responses request to Chat Completions and delegates to
 // RelayTextHelper. The mock adaptor synthesizes a Chat Completions
-// response (default openai-chat behavior). The client — which sent a
-// Responses request — should receive a Chat Completions shaped reply
-// (because the conversion delegates the response back through the chat
-// pipeline). This is the key asymmetry: responses->responses returns
-// Responses shape, responses->chat returns Chat shape.
+// response (default openai-chat behavior). The chat pipeline's output
+// is then converted BACK into Responses format by
+// chatToResponsesWriter, so the client always sees Responses shape on
+// /v1/responses regardless of which path served it.
 // ===========================================================================
 
 func TestCategory3_ResponsesToChat_NonStream(t *testing.T) {
@@ -166,18 +165,35 @@ func TestCategory3_ResponsesToChat_NonStream(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("response not JSON: %v\n%s", err, rec.Body.String())
 	}
-	// After conversion the response is Chat Completions shaped.
-	if obj, _ := resp["object"].(string); obj != "chat.completion" {
-		t.Errorf("object = %q, want \"chat.completion\" (converted to chat)", obj)
+	// The client spoke the Responses protocol, so the converted reply
+	// must come back in Responses shape — the chat pipeline's output is
+	// converted back by chatToResponsesWriter.
+	if obj, _ := resp["object"].(string); obj != "response" {
+		t.Errorf("object = %q, want \"response\" (converted back from chat)", obj)
 	}
-	choices, _ := resp["choices"].([]any)
-	if len(choices) == 0 {
-		t.Fatalf("expected non-empty choices (chat shape) after conversion")
+	output, _ := resp["output"].([]any)
+	if len(output) == 0 {
+		t.Fatalf("expected non-empty output[] (Responses shape), got %v", resp["output"])
 	}
-	// Chat usage uses prompt_tokens, not input_tokens.
+	msg, _ := output[0].(map[string]any)
+	if ty, _ := msg["type"].(string); ty != "message" {
+		t.Errorf("output[0].type = %q, want message", ty)
+	}
+	content, _ := msg["content"].([]any)
+	if len(content) == 0 {
+		t.Fatalf("output[0].content empty: %v", msg["content"])
+	}
+	part, _ := content[0].(map[string]any)
+	if ty, _ := part["type"].(string); ty != "output_text" {
+		t.Errorf("content[0].type = %q, want output_text", ty)
+	}
+	if txt, _ := part["text"].(string); txt == "" {
+		t.Errorf("content[0].text empty — mock reply text lost in conversion")
+	}
+	// Responses usage field names.
 	usage, _ := resp["usage"].(map[string]any)
-	if pt, _ := usage["prompt_tokens"].(float64); pt == 0 {
-		t.Errorf("expected prompt_tokens > 0 (chat shape usage), got %v", usage)
+	if it, _ := usage["input_tokens"].(float64); it == 0 {
+		t.Errorf("usage.input_tokens = %v, want > 0 (mapped from prompt_tokens)", usage["input_tokens"])
 	}
 }
 
@@ -193,17 +209,76 @@ func TestCategory3_ResponsesToChat_Stream(t *testing.T) {
 		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
 	out := rec.Body.String()
-	// Converted streaming is Chat Completions SSE (data:-only, no event:).
-	if !strings.Contains(out, "data: ") {
-		t.Errorf("converted stream body missing 'data: ' prefix:\n%s", out)
+	// The chat SSE stream must be translated into the Responses event
+	// vocabulary so Responses clients (codex et al.) can parse it.
+	for _, want := range []string{
+		"event: response.created",
+		"event: response.output_item.added",
+		"event: response.output_text.delta",
+		"event: response.output_text.done",
+		"event: response.output_item.done",
+		"event: response.completed",
+		"data: [DONE]",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("converted stream missing %q:\n%s", want, out)
+		}
 	}
-	if !strings.Contains(out, "[DONE]") {
-		t.Errorf("converted stream body missing [DONE]:\n%s", out)
+	// The completed event carries the usage block mapped from chat
+	// prompt/completion tokens.
+	if !strings.Contains(out, "\"input_tokens\"") {
+		t.Errorf("response.completed missing Responses-style usage (input_tokens):\n%s", out)
 	}
-	// Must NOT carry Responses-style event: lines — the conversion
-	// produces a Chat stream.
-	if strings.Contains(out, "event: response.created") {
-		t.Errorf("converted stream should be Chat SSE, not Responses SSE:\n%s", out)
+}
+
+// TestCategory3_ResponsesToChat_ToolCallRoundTrip pins the tool-call
+// conversion path: a Responses request carrying tools goes upstream as
+// a Chat Completions tools array, the chat tool_calls reply comes back
+// as a Responses function_call output item (what codex-style clients
+// act on).
+func TestCategory3_ResponsesToChat_ToolCallRoundTrip(t *testing.T) {
+	r := setupMockRelayStackWithOptions(t, mockStackOptions{
+		registerResponsesRoute: true, // supportResponses=false → convert
+	})
+	body := basicResponsesBody(map[string]any{
+		"tools": []map[string]any{{
+			"type": "function",
+			"function": map[string]any{
+				"name":        "get_weather",
+				"description": "Get weather",
+				"parameters":  map[string]any{"type": "object", "properties": map[string]any{}},
+			},
+		}},
+	})
+	rec := doRelayRequestTo(t, r, "/v1/responses", "Bearer sk-test", "openai-tool-call", body)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("response not JSON: %v\n%s", err, rec.Body.String())
+	}
+	if obj, _ := resp["object"].(string); obj != "response" {
+		t.Fatalf("object = %q, want response", obj)
+	}
+	output, _ := resp["output"].([]any)
+	if len(output) == 0 {
+		t.Fatalf("output empty: %v", resp["output"])
+	}
+	call, _ := output[0].(map[string]any)
+	if ty, _ := call["type"].(string); ty != "function_call" {
+		t.Fatalf("output[0].type = %q, want function_call (chat tool_calls converted back)", ty)
+	}
+	if name, _ := call["name"].(string); name != "get_weather" {
+		t.Errorf("function_call.name = %q, want get_weather", name)
+	}
+	if callID, _ := call["call_id"].(string); callID == "" {
+		t.Errorf("function_call.call_id empty — clients need it to send the tool output back")
+	}
+	var args map[string]any
+	if err := json.Unmarshal([]byte(call["arguments"].(string)), &args); err != nil {
+		t.Errorf("function_call.arguments not valid JSON: %v", call["arguments"])
 	}
 }
 
@@ -263,8 +338,8 @@ func TestCategoryRouting_FlagControlsPassthroughVsConversion(t *testing.T) {
 		}
 		var resp map[string]any
 		_ = json.Unmarshal(rec.Body.Bytes(), &resp)
-		if resp["object"] != "chat.completion" {
-			t.Errorf("support_responses=false should convert to Chat shape, got object=%v", resp["object"])
+		if resp["object"] != "response" {
+			t.Errorf("support_responses=false converts to chat upstream but must reply in Responses shape, got object=%v", resp["object"])
 		}
 	})
 }
