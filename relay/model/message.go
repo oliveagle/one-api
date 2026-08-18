@@ -2,6 +2,7 @@ package model
 
 type Message struct {
 	Role             string  `json:"role,omitempty"`
+	ID               string  `json:"id,omitempty"`
 	Content          any     `json:"content,omitempty"`
 	ReasoningContent any     `json:"reasoning_content,omitempty"`
 	Name             *string `json:"name,omitempty"`

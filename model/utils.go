@@ -47,6 +47,25 @@ func addNewRecord(type_ int, id int, value int64) {
 
 func batchUpdate() {
 	logger.SysLog("batch update started")
+	batchUpdateOnce()
+	logger.SysLog("batch update finished")
+}
+
+// BatchUpdate is the exported, test-friendly entry point for batchUpdate.
+// Tests that exercise the quota accounting path (which stages increments
+// into the in-memory batchUpdateStores map via addNewRecord) call this
+// to synchronously flush pending updates to the database without waiting
+// for the background timer. It is safe to call when no updates are
+// pending — the swap produces an empty map and the loop is a no-op.
+func BatchUpdate() {
+	batchUpdateOnce()
+}
+
+// batchUpdateOnce swaps every per-type store out from under its lock and
+// applies the staged increments. Split out from batchUpdate so both the
+// background timer path (with logging) and the synchronous test path
+// (BatchUpdate) share one implementation.
+func batchUpdateOnce() {
 	for i := 0; i < BatchUpdateTypeCount; i++ {
 		batchUpdateLocks[i].Lock()
 		store := batchUpdateStores[i]
@@ -74,5 +93,4 @@ func batchUpdate() {
 			}
 		}
 	}
-	logger.SysLog("batch update finished")
 }

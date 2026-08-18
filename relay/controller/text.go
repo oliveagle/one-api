@@ -23,6 +23,15 @@ import (
 	"github.com/songquanpeng/one-api/relay/model"
 )
 
+// PostConsumeQuotaSynchronous, when true, makes RelayTextHelper run
+// postConsumeQuota synchronously instead of in a detached goroutine.
+// Production leaves it false (the quota settle is not on the request's
+// critical path). Tests that drive the full relay pipeline flip it to
+// true so the goroutine cannot outlive the test and race the global
+// state (common.RedisEnabled, batchUpdateStores, model.DB) that the
+// next test's setup mutates — see controller/relay_mock_integration_test.go.
+var PostConsumeQuotaSynchronous bool
+
 func RelayTextHelper(c *gin.Context) *model.ErrorWithStatusCode {
 	ctx := c.Request.Context()
 	meta := meta.GetByContext(c)
@@ -93,7 +102,11 @@ func RelayTextHelper(c *gin.Context) *model.ErrorWithStatusCode {
 		return respErr
 	}
 	// post-consume quota
-	go postConsumeQuota(ctx, usage, meta, textRequest, ratio, preConsumedQuota, modelRatio, groupRatio, systemPromptReset)
+	if PostConsumeQuotaSynchronous {
+		postConsumeQuota(ctx, usage, meta, textRequest, ratio, preConsumedQuota, modelRatio, groupRatio, systemPromptReset)
+	} else {
+		go postConsumeQuota(ctx, usage, meta, textRequest, ratio, preConsumedQuota, modelRatio, groupRatio, systemPromptReset)
+	}
 	return nil
 }
 
