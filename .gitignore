@@ -4,6 +4,13 @@ upload
 *.exe
 *.db
 build
+# ...but keep the embedded router test fixture (router/web_test.go
+# //go:embeds it; a fresh clone fails to compile without it).
+!router/web/build/
+router/web/build/*
+!router/web/build/testbuild/
+router/web/build/testbuild/*
+!router/web/build/testbuild/index.html
 *.db-journal
 logs
 data

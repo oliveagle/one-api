@@ -122,14 +122,79 @@ channel cannot surface.
 
 - **Tier 1 (OpenAI passthrough)**: `ConvertRequest` returns the request
   unchanged, reuses `openai.Handler`. E.g. plain OpenAI, Zhipu. The
-  `TestProvider_OpenAI_StandardURLAndAuth` test is the baseline.
+  `TestProvider_Tier1_OpenAIPassthrough_ExplicitBaseURL` table test
+  pins every such channel type; `TestProvider_Tier1_DefaultBaseURLFallback`
+  pins the default base URL each type falls back to (including Groq's
+  `/openai` and Novita's `/v3/openai` path segments).
 - **Tier 2 (OpenAI-compatible with quirks)**: same `openai.Adaptor` but
   branches on `channeltype` in `GetRequestURL` / `SetupRequestHeader`.
   E.g. Azure (deployment URL + `api-key` header), OpenRouter (extra
-  attribution headers), Minimax/Doubao/Novita (URL path tweaks). **This
-  is where provider tests add the most value** — each branch is a
-  potential regression point.
+  attribution headers), Minimax/Doubao/BaiduV2/AliBailian/
+  GeminiOpenAICompatible (URL path tweaks), OpenAICompatible/AIHubMix
+  (path normalization), Cloudflare AI Gateway (prefix stripping).
+  Pinned in `relay_provider_integration_test.go` +
+  `relay_provider_tier2_test.go` — each branch is a potential
+  regression point.
 - **Tier 3 (fully proprietary format)**: own `model.go` + real
-  conversion (Anthropic, Gemini, Ali, Baidu, Tencent, Cohere, ...). Not
-  yet covered by provider tests; adding them requires canned fixtures of
-  the provider's proprietary response format.
+  conversion (Anthropic, Gemini, Ali, Baidu, Tencent, Cohere, Coze,
+  DeepL, Ollama, PaLM, AIProxyLibrary, Cloudflare, Zhipu v3, VertexAI).
+  Pinned in `relay_provider_proprietary_a_test.go` (anthropic, gemini,
+  zhipu, vertexai) and `relay_provider_proprietary_b_test.go` (the
+  rest) with canned fixtures of each provider's proprietary response
+  format.
+
+### Provider quirk coverage matrix
+
+| Provider | Pinned quirks | Test |
+|---|---|---|
+| OpenAI | `/v1/chat/completions` + Bearer; default base | `TestProvider_OpenAI_StandardURLAndAuth`, tier-1 tests |
+| Azure | deployment URL (dots stripped), `api-key` header, `api-version` query | `TestProvider_Azure_*` |
+| OpenRouter | `HTTP-Referer` + `X-Title` attribution, default base | `TestProvider_OpenRouter_AddsAttributionHeaders`, tier-1 |
+| Minimax | `/v1/text/chatcompletion_v2` | tier-2 |
+| Doubao | `/api/v3/chat/completions` | tier-2 |
+| Novita | base verbatim + `/chat/completions`, default `/v3/openai` | tier-1 + tier-2 |
+| BaiduV2 | `/v2/chat/completions` | tier-2 |
+| AliBailian | `/compatible-mode/v1/chat/completions` | tier-2 |
+| GeminiOpenAICompatible | strips client `/v1` prefix | tier-2 |
+| OpenAICompatible | strips `/v1`, trims trailing slash | tier-2 |
+| AIHubMix | `/v1/v1` de-duplication | tier-2 |
+| Anthropic | `/v1/messages`, `x-api-key`, version/beta headers (incl. claude-3-5-sonnet override), system hoist, max_tokens=4096 default | proprietary-a |
+| Gemini (native) | `:generateContent` URL, per-model version (v1beta for 1.5/2.0 + api_version override), `x-goog-api-key`, `system_instruction`, safety settings, snake_case keys, dummy "Okay" model turn | proprietary-a |
+| Zhipu | v4 URL + locally-generated HS256 JWT as **bare** Authorization (no Bearer), TopP/Temperature clamp to [0,1], v3 `model-api` fallback | proprietary-a |
+| VertexAI | project/region URL, cached GCP token, `:rawPredict` for claude + `anthropic_version: vertex-2023-10-16`, model field omitted | proprietary-a |
+| Ali | generation endpoint, `-internet` suffix → `enable_search`, lowercased roles, TopP ≤ 0.9999 clamp | proprietary-b |
+| Baidu (v1) | OAuth token exchange (`apiKey\|secretKey`), ERNIE model → endpoint mapping, `access_token` query, system hoist, `penalty_score` rename | proprietary-b |
+| Tencent | TC3-HMAC-SHA256 auth, `X-TC-Action/Version/Timestamp` headers, PascalCase body | proprietary-b |
+| Cohere | `/v1/chat`, last-user-message extraction, SYSTEM/CHATBOT roles, `-internet` → web-search connector | proprietary-b |
+| Coze | `bot-` prefix trim, forced `user` from channel config, last message → query, answer-only filtering | proprietary-b |
+| DeepL | `DeepL-Auth-Key` scheme, `target_lang` from model name | proprietary-b |
+| Ollama | `/api/chat`, `max_tokens` → `options.num_predict` | proprietary-b |
+| PaLM | hardcoded `chat-bison-001`, `x-goog-api-key`, author 0/1, `topK` fed from MaxTokens | proprietary-b |
+| AIProxyLibrary | `/api/library/ask`, last-message-only query, `libraryId` from config | proprietary-b |
+| Cloudflare | account-scoped URL from `user_id` config, AI-gateway passthrough form | proprietary-b |
+| channel Headers | override Content-Type / add custom headers | tier-2 |
+| (all) | stream Accept default; fast path forwards client body verbatim (no stream_options injection) | tier-2 |
+
+### Providers that cannot run through the full stack (and why)
+
+These four are pinned at the unit level instead — do NOT try to point
+them at `testutil.MockTransport`, their transport is out of reach:
+
+- **AwsClaude** (`relay/adaptor/aws/`): the Bedrock SDK client does
+  SigV4-signed calls to region endpoints; `GetRequestURL` returns "".
+  Pinned: `aws/registry_test.go` (model → sub-adaptor dispatch,
+  Bedrock inference-profile ID maps).
+- **Xunfei v1** (`relay/adaptor/xunfei/`): websocket to a hardcoded
+  `wss://spark-api.xf-yun.com` host — even non-stream chat dials WS.
+  Pinned: `xunfei/domain_test.go` (model → version → domain resolution,
+  auth URL shapes). Use XunfeiV2 (OpenAI-compatible HTTP) for
+  full-stack coverage.
+- **Replicate** (`relay/adaptor/replicate/`): hardcoded
+  `https://api.replicate.com` + `http.DefaultClient` (bypasses the
+  shared client) + blocking 3s poll loop. Pinned:
+  `replicate/adaptor_test.go` (stream-only gate, prompt flattening,
+  sampling defaults).
+- **Proxy** (`relay/adaptor/proxy/`): raw byte passthrough on a
+  dedicated route (`/v1/oneapi/proxy/...`), not the chat pipeline;
+  `ConvertRequest` deliberately errors. No quirks to pin beyond the
+  byte copy itself.

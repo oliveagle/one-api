@@ -31,7 +31,9 @@ package controller
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
+	"net/url"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -54,13 +56,24 @@ type providerStackOptions struct {
 	channelType int
 	// baseURL is the upstream base URL the channel is configured with.
 	// The test's MockTransport handler must match the full URL the
-	// adaptor builds from this base.
+	// adaptor builds from this base. An empty string makes the relay
+	// fall back to the channel type's default base URL
+	// (channeltype.ChannelBaseURLs).
 	baseURL string
 	// models is the CSV of models the channel serves.
 	models string
 	// configJSON is the channel's Config field (for providers that need
 	// extra config, e.g. Azure's api_version).
 	configJSON string
+	// key overrides the channel's upstream key (default "upstream-key").
+	// Providers with structured keys need this: tencent expects
+	// "appId|secretId|secretKey", baidu "apiKey|secretKey", zhipu
+	// "id.secret".
+	key string
+	// headersJSON is the channel's Headers field — extra headers the
+	// relay stamps on every upstream request (see
+	// SetupCommonRequestHeader).
+	headersJSON string
 }
 
 // setupProviderStack is the REAL-adaptor counterpart to
@@ -102,11 +115,15 @@ func setupProviderStack(t *testing.T, opts providerStackOptions) (*gin.Engine, *
 	}
 
 	baseURL := opts.baseURL
+	channelKey := opts.key
+	if channelKey == "" {
+		channelKey = "upstream-key"
+	}
 	ch := &model.Channel{
 		Id: 1, Type: opts.channelType, Name: "provider-channel",
 		Status: model.ChannelStatusEnabled, Group: "default",
 		Models: opts.models, BaseURL: &baseURL,
-		Key: "upstream-key", Config: opts.configJSON,
+		Key: channelKey, Config: opts.configJSON, Headers: &opts.headersJSON,
 	}
 	if err := ch.Insert(); err != nil {
 		t.Fatalf("seed channel: %v", err)
@@ -170,6 +187,48 @@ func capturingHandler(t *testing.T, captured **http.Request, status int, body []
 		w.WriteHeader(status)
 		_, _ = w.Write(body)
 	})
+}
+
+// upstreamCapture records everything about an outbound upstream request
+// the adaptor built: method, URL, headers, and the fully-read body.
+type upstreamCapture struct {
+	Method string
+	URL    *url.URL
+	Header http.Header
+	Body   []byte
+}
+
+// captureUpstream returns an http.Handler that snapshots the upstream
+// request (reading the body — do this at handler time, it is consumed
+// afterwards) and responds with the canned body.
+func captureUpstream(t *testing.T, cap **upstreamCapture, status int, respBody []byte) http.Handler {
+	t.Helper()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read upstream request body: %v", err)
+		}
+		*cap = &upstreamCapture{
+			Method: r.Method,
+			URL:    r.URL,
+			Header: r.Header.Clone(),
+			Body:   body,
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = w.Write(respBody)
+	})
+}
+
+// decodedBody unmarshals the captured upstream request body as JSON.
+// Fatal if the body is not valid JSON.
+func (u *upstreamCapture) decodedBody(t *testing.T) map[string]any {
+	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal(u.Body, &m); err != nil {
+		t.Fatalf("upstream request body is not JSON: %v\n%s", err, u.Body)
+	}
+	return m
 }
 
 // ===========================================================================
