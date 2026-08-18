@@ -31,6 +31,7 @@ func TestApitypeDistinct(t *testing.T) {
 		{VertexAI, "VertexAI"},
 		{Proxy, "Proxy"},
 		{Replicate, "Replicate"},
+		{Mock, "Mock"},
 	} {
 		if prev, ok := seen[name.id]; ok {
 			t.Errorf("id collision: %s and %s share id %d", prev, name.name, name.id)
@@ -47,5 +48,8 @@ func TestDummyUpperBound(t *testing.T) {
 	}
 	if Dummy <= Replicate {
 		t.Fatalf("Dummy (%d) must exceed Replicate (%d)", Dummy, Replicate)
+	}
+	if Dummy <= Mock {
+		t.Fatalf("Dummy (%d) must exceed Mock (%d)", Dummy, Mock)
 	}
 }
