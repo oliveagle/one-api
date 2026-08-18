@@ -29,11 +29,11 @@ import (
 // untouched, so stateful fields (previous_response_id, store) and server-side
 // tools keep working. See docs/adr/0001-openai-responses-api-passthrough.md.
 type ResponsesRequest struct {
-	Model        string         `json:"model"`
-	Stream       bool           `json:"stream,omitempty"`
-	Input        any            `json:"input,omitempty"`
-	Instructions string         `json:"instructions,omitempty"`
-	MaxOutput    int            `json:"max_output_tokens,omitempty"`
+	Model        string `json:"model"`
+	Stream       bool   `json:"stream,omitempty"`
+	Input        any    `json:"input,omitempty"`
+	Instructions string `json:"instructions,omitempty"`
+	MaxOutput    int    `json:"max_output_tokens,omitempty"`
 	// Tools carries the raw tools array from the Responses API request. The
 	// schema mirrors OpenAI ChatCompletions (type=function, function={name,...})
 	// so the same struct can be re-emitted as-is when forwarding to a chat
@@ -182,19 +182,38 @@ func upstreamSupportsResponses(meta *meta.Meta) bool {
 // so RelayTextHelper reads it as if the client had called /v1/chat/completions
 // directly.
 //
-// The original request path and body are restored before returning, so the
-// caller's retry/error handling sees the untouched Responses request.
+// The response direction is converted back: the client spoke the
+// Responses protocol, so the chat pipeline's output (body or SSE
+// events) is wrapped by chatToResponsesWriter and re-emitted in
+// Responses format.
+//
+// The original request path and body are restored AFTER the chat
+// pipeline finishes, so the caller's retry/error handling sees the
+// untouched Responses request — but the pipeline itself must observe
+// the converted chat request for its whole run (restoring earlier
+// would make getAndValidateTextRequest re-read the raw Responses body
+// and leak it upstream).
 func relayResponsesConvertToChat(c *gin.Context, request *ResponsesRequest) *relaymodel.ErrorWithStatusCode {
-	if _, err := convertResponsesRequestToChat(c, request); err != nil {
+	restore, err := convertResponsesRequestToChat(c, request)
+	if err != nil {
 		return openai.ErrorWrapper(err, "responses_conversion_failed", http.StatusBadRequest)
 	}
-	return RelayTextHelper(c)
+	origWriter := c.Writer
+	convertBack := newChatToResponsesWriter(origWriter, request.Stream, request.Model)
+	c.Writer = convertBack
+	bizErr := RelayTextHelper(c)
+	c.Writer = origWriter
+	convertBack.finish(bizErr != nil)
+	restore()
+	return bizErr
 }
 
 // convertResponsesRequestToChat converts a Responses API request into a Chat
 // Completions request body and rewrites the request context so RelayTextHelper
-// picks it up as a chat request. Returns the converted JSON body on success.
-func convertResponsesRequestToChat(c *gin.Context, request *ResponsesRequest) ([]byte, error) {
+// picks it up as a chat request. It returns a restore closure that puts the
+// original path and cached body back — the caller MUST invoke it after the
+// chat pipeline completes, not before.
+func convertResponsesRequestToChat(c *gin.Context, request *ResponsesRequest) (func(), error) {
 	ctx := c.Request.Context()
 
 	// Log the original Responses request shape before conversion.
@@ -232,12 +251,12 @@ func convertResponsesRequestToChat(c *gin.Context, request *ResponsesRequest) ([
 	c.Set(ctxkey.KeyRequestBody, body)
 	c.Request.Body = io.NopCloser(bytes.NewBuffer(body))
 	c.Request.URL.Path = "/v1/chat/completions"
-	defer func() {
+	restore := func() {
 		c.Request.URL.Path = originalPath
 		c.Set(ctxkey.KeyRequestBody, originalBody)
-	}()
+	}
 
-	return body, nil
+	return restore, nil
 }
 
 // relayResponsesCreate relays POST /v1/responses. When the selected channel's

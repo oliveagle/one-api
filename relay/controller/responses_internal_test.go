@@ -339,12 +339,15 @@ func TestRelayResponsesConvertToChat_DelegateToChatPipeline(t *testing.T) {
 	// Convert without a real channel: the chat pipeline itself cannot run in a
 	// unit test (it needs a channel/DB), so exercise the conversion half, which
 	// returns the rewritten Chat Completions body.
-	convertedBody, err := convertResponsesRequestToChat(c, &request)
+	restore, err := convertResponsesRequestToChat(c, &request)
 	if err != nil {
 		t.Fatalf("convertResponsesRequestToChat: %v", err)
 	}
+	defer restore()
 
-	// The converted body must be well-formed Chat Completions JSON.
+	// The rewritten request body (visible through the context cache)
+	// must be well-formed Chat Completions JSON.
+	convertedBody, _ := common.GetRequestBody(c)
 	if len(convertedBody) == 0 {
 		t.Fatal("converted body is empty")
 	}
@@ -377,10 +380,12 @@ func TestRelayResponsesConvertToChat_ErrorPropagates(t *testing.T) {
 	// A request with neither input nor instructions converts to zero messages,
 	// which is not an error at the conversion layer; verify the returned body
 	// is valid JSON and no error is raised.
-	body, err := convertResponsesRequestToChat(c, &request)
+	restore, err := convertResponsesRequestToChat(c, &request)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	defer restore()
+	body, _ := common.GetRequestBody(c)
 	var chat relaymodel.GeneralOpenAIRequest
 	if err := json.Unmarshal(body, &chat); err != nil {
 		t.Fatalf("invalid JSON: %v", err)
@@ -401,11 +406,18 @@ func TestRelayResponsesConvertToChat_RestoresOriginalBodyAndPath(t *testing.T) {
 	}
 	originalBody, _ := common.GetRequestBody(c)
 
-	if _, err := convertResponsesRequestToChat(c, &request); err != nil {
+	restore, err := convertResponsesRequestToChat(c, &request)
+	if err != nil {
 		t.Fatalf("convertResponsesRequestToChat: %v", err)
 	}
 
-	// After the deferred restore, the cached body and path are back to the
+	// The conversion is live: path rewritten to the chat endpoint.
+	if c.Request.URL.Path != "/v1/chat/completions" {
+		t.Errorf("path during conversion = %q, want /v1/chat/completions", c.Request.URL.Path)
+	}
+	restore()
+
+	// After restore() runs, the cached body and path are back to the
 	// original Responses request.
 	cached, _ := c.Get(ctxkey.KeyRequestBody)
 	if !bytes.Equal(cached.([]byte), originalBody) {
