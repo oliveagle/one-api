@@ -538,3 +538,55 @@ func TestNormalizeMessageContentTypes_ChatOnlyLeavesRequestUntouched(t *testing.
 		t.Error("request without Responses part types must not be modified")
 	}
 }
+
+func TestRepairToolCallFunctionNames_SingleToolInheritsName(t *testing.T) {
+	req := &GeneralOpenAIRequest{
+		Tools: []Tool{{Type: "function", Function: Function{Name: "shell"}}},
+		Messages: []Message{
+			{Role: "user", Content: "run it"},
+			{Role: "assistant", ToolCalls: []Tool{
+				{Id: "call_1", Type: "function", Function: Function{Name: "", Arguments: `{"cmd":"ls"}`}},
+			}},
+			{Role: "tool", ToolCallId: "call_1", Content: "ok"},
+		},
+	}
+	if !req.RepairToolCallFunctionNames() {
+		t.Fatal("expected modification for empty function name")
+	}
+	if got := req.Messages[1].ToolCalls[0].Function.Name; got != "shell" {
+		t.Errorf("name = %q, want the request's only tool name %q", got, "shell")
+	}
+}
+
+func TestRepairToolCallFunctionNames_MultiToolsGetPlaceholders(t *testing.T) {
+	req := &GeneralOpenAIRequest{
+		Tools: []Tool{
+			{Type: "function", Function: Function{Name: "shell"}},
+			{Type: "function", Function: Function{Name: "read_file"}},
+		},
+		Messages: []Message{
+			{Role: "assistant", ToolCalls: []Tool{
+				{Id: "c1", Type: "function", Function: Function{Name: "", Arguments: "{}"}},
+				{Id: "c2", Type: "function", Function: Function{Name: "shell", Arguments: "{}"}},
+				{Id: "c3", Type: "function", Function: Function{Name: "", Arguments: "{}"}},
+			}},
+		},
+	}
+	if !req.RepairToolCallFunctionNames() {
+		t.Fatal("expected modification")
+	}
+	names := []string{
+		req.Messages[0].ToolCalls[0].Function.Name,
+		req.Messages[0].ToolCalls[1].Function.Name,
+		req.Messages[0].ToolCalls[2].Function.Name,
+	}
+	if names[0] != "unknown_tool_1" {
+		t.Errorf("first empty name = %q, want unknown_tool_1", names[0])
+	}
+	if names[1] != "shell" {
+		t.Errorf("valid name must be untouched, got %q", names[1])
+	}
+	if names[2] != "unknown_tool_2" {
+		t.Errorf("second empty name = %q, want unknown_tool_2", names[2])
+	}
+}

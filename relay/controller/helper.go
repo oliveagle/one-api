@@ -70,6 +70,12 @@ func getAndValidateTextRequest(c *gin.Context, relayMode int) (*relaymodel.Gener
 			logger.Infof(ctx, "repaired empty tool call ids in request history")
 			modified = true
 		}
+		// Same clobbering empties function names; MiniMax et al. reject
+		// those with "function name is empty".
+		if textRequest.RepairToolCallFunctionNames() {
+			logger.Infof(ctx, "repaired empty tool call function names in request history")
+			modified = true
+		}
 		if textRequest.RepairOrphanedToolCalls() {
 			logger.Infof(ctx, "repaired orphaned tool calls - inserted synthetic tool responses")
 			modified = true

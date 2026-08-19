@@ -110,6 +110,47 @@ func (r *GeneralOpenAIRequest) NormalizeMessageContentTypes() bool {
 	return modified
 }
 
+// RepairToolCallFunctionNames gives assistant tool_calls with EMPTY
+// function names a usable name, so replayed history passes upstream
+// validation. Empty names reach the history the same way empty ids do:
+// an upstream's `name: null` continuation fragments clobber the name
+// captured from the first fragment, and clients persist and replay the
+// damaged turns (observed: MiniMax rejecting with
+// "invalid params, function name is empty (2013)").
+//
+// When the request carries exactly ONE tool, a nameless call is that
+// tool with near certainty and inherits its name; otherwise a
+// distinguishable placeholder (unknown_tool_<n>) is assigned — the name
+// in replayed history is context for the model, not a dispatch target.
+//
+// Returns true if any names were rewritten.
+func (r *GeneralOpenAIRequest) RepairToolCallFunctionNames() bool {
+	if r == nil {
+		return false
+	}
+	singleTool := ""
+	if len(r.Tools) == 1 {
+		singleTool = r.Tools[0].Function.Name
+	}
+	modified := false
+	seq := 0
+	for i := range r.Messages {
+		for j := range r.Messages[i].ToolCalls {
+			tc := &r.Messages[i].ToolCalls[j]
+			if strings.TrimSpace(tc.Function.Name) == "" {
+				seq++
+				if singleTool != "" {
+					tc.Function.Name = singleTool
+				} else {
+					tc.Function.Name = fmt.Sprintf("unknown_tool_%d", seq)
+				}
+				modified = true
+			}
+		}
+	}
+	return modified
+}
+
 // RepairToolCallIDs assigns synthetic ids to assistant tool_calls that carry
 // EMPTY ids, and rewrites the paired tool responses' tool_call_ids so the
 // call/response pairing survives. Without this, history replayed from clients
