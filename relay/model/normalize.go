@@ -1,6 +1,10 @@
 package model
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+)
 
 // NormalizeToolCallArguments coerces every tool_calls[].function.arguments in
 // the request to a JSON string, as the OpenAI spec requires.
@@ -28,6 +32,66 @@ func (r *GeneralOpenAIRequest) NormalizeToolCallArguments() bool {
 					msg.ToolCalls[j].Function.Arguments = string(b)
 					modified = true
 				}
+			}
+		}
+	}
+	return modified
+}
+
+// RepairToolCallIDs assigns synthetic ids to assistant tool_calls that carry
+// EMPTY ids, and rewrites the paired tool responses' tool_call_ids so the
+// call/response pairing survives. Without this, history replayed from clients
+// that lost ids upstream rejects the whole request with
+//
+//	invalid params, duplicate tool_call id:  (2013)
+//	missing messages.tool_calls.id parameter
+//
+// Empty ids reach clients when an upstream streams tool_call continuation
+// fragments whose explicit `id: null` clobbers the id captured from the first
+// fragment (observed: xiaomi mimo via one-api; the harness then persists and
+// replays the empty ids). Repairing here also heals sessions whose logs
+// already contain the corrupt turns.
+//
+// Pairing is positional: the tool messages immediately following an assistant
+// message respond to its tool_calls in order, so the Nth empty tool_call_id
+// receives the Nth synthetic id.
+//
+// Returns true if any ids were modified.
+func (r *GeneralOpenAIRequest) RepairToolCallIDs() bool {
+	if r == nil || len(r.Messages) == 0 {
+		return false
+	}
+	modified := false
+	seq := 0
+	for i := range r.Messages {
+		msg := &r.Messages[i]
+		if msg.Role != "assistant" || len(msg.ToolCalls) == 0 {
+			continue
+		}
+		// Synthetic ids for this assistant message's empty tool_calls,
+		// in call order, awaiting their paired tool responses.
+		var pendingSynthetic []string
+		for j := range msg.ToolCalls {
+			if strings.TrimSpace(msg.ToolCalls[j].Id) == "" {
+				seq++
+				id := fmt.Sprintf("call_oneapi_%d", seq)
+				msg.ToolCalls[j].Id = id
+				pendingSynthetic = append(pendingSynthetic, id)
+				modified = true
+			}
+		}
+		if len(pendingSynthetic) == 0 {
+			continue
+		}
+		// Rewrite empty tool_call_ids in the tool messages that follow,
+		// consuming the synthetic ids in order.
+		next := 0
+		for k := i + 1; k < len(r.Messages) && r.Messages[k].Role == "tool"; k++ {
+			toolMsg := &r.Messages[k]
+			if strings.TrimSpace(toolMsg.ToolCallId) == "" && next < len(pendingSynthetic) {
+				toolMsg.ToolCallId = pendingSynthetic[next]
+				next++
+				modified = true
 			}
 		}
 	}

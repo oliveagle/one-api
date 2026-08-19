@@ -47,6 +47,15 @@ func getAndValidateTextRequest(c *gin.Context, relayMode int) (*relaymodel.Gener
 			logger.Infof(ctx, "normalized tool call arguments from object to string")
 			modified = true
 		}
+		// Clients whose tool_call ids were clobbered upstream (null-id
+		// continuation fragments, e.g. xiaomi mimo) replay empty ids,
+		// which every upstream rejects with 400 duplicate/missing
+		// tool_call id. Repair before orphan-pairing so the synthetic
+		// ids participate in the pairing.
+		if textRequest.RepairToolCallIDs() {
+			logger.Infof(ctx, "repaired empty tool call ids in request history")
+			modified = true
+		}
 		if textRequest.RepairOrphanedToolCalls() {
 			logger.Infof(ctx, "repaired orphaned tool calls - inserted synthetic tool responses")
 			modified = true
