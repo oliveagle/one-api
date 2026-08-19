@@ -41,6 +41,13 @@ func getAndValidateTextRequest(c *gin.Context, relayMode int) (*relaymodel.Gener
 	}
 	modified := false
 	if relayMode == relaymode.ChatCompletions {
+		// o-series SDKs and codex-cli send the system prompt as role
+		// "developer"; every non-OpenAI upstream rejects that role.
+		// Normalise before anything else keys off roles.
+		if textRequest.NormalizeMessageRoles() {
+			logger.Infof(ctx, "normalized developer role to system")
+			modified = true
+		}
 		// codex-cli 0.142 chat emitter sends function.arguments as a JSON object;
 		// the spec (and every upstream) requires a string. Normalise once here.
 		if textRequest.NormalizeToolCallArguments() {

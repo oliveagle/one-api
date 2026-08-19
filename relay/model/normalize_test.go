@@ -450,3 +450,38 @@ func TestRepairToolCallIDs_IntegrationWithOrphanRepair(t *testing.T) {
 		t.Errorf("orphan repair modified a repaired history: %d -> %d messages", before, len(req.Messages))
 	}
 }
+
+func TestNormalizeMessageRoles_DeveloperToSystem(t *testing.T) {
+	req := &GeneralOpenAIRequest{
+		Messages: []Message{
+			{Role: "developer", Content: "You are a coding agent."},
+			{Role: "user", Content: "hi"},
+			{Role: "assistant", Content: "hello"},
+			{Role: "tool", ToolCallId: "call_1", Content: "ok"},
+		},
+	}
+	if !req.NormalizeMessageRoles() {
+		t.Fatal("expected modification for developer role")
+	}
+	if req.Messages[0].Role != "system" {
+		t.Errorf("developer role not rewritten, got %q", req.Messages[0].Role)
+	}
+	// The classic four roles must pass through untouched.
+	for i, want := range []string{"user", "assistant", "tool"} {
+		if got := req.Messages[i+1].Role; got != want {
+			t.Errorf("message %d role = %q, want %q (must not be rewritten)", i+1, got, want)
+		}
+	}
+}
+
+func TestNormalizeMessageRoles_NoDeveloperLeavesRequestUntouched(t *testing.T) {
+	req := &GeneralOpenAIRequest{
+		Messages: []Message{
+			{Role: "system", Content: "sys"},
+			{Role: "user", Content: "hi"},
+		},
+	}
+	if req.NormalizeMessageRoles() {
+		t.Error("request without developer role must not be modified")
+	}
+}

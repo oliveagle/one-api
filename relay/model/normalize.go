@@ -38,6 +38,35 @@ func (r *GeneralOpenAIRequest) NormalizeToolCallArguments() bool {
 	return modified
 }
 
+// NormalizeMessageRoles maps the OpenAI "developer" role back to "system".
+//
+// The o-series SDKs (and codex-cli's chat emitter) send the system prompt
+// as role "developer" — the successor name OpenAI introduced for "system".
+// Every other upstream we relay to (dashscope, volc, minimax, kimi,
+// zhipu, anthropic-family converters, ...) only accepts the classic four
+// roles and rejects the request with e.g.
+//
+//	The parameter `messages.role` ... invalid value: `developer`,
+//	supported values are: `system`, `assistant`, `user`, `tool`
+//
+// OpenAI itself still accepts "system" on every chat model, so an
+// unconditional mapping at the ingress is safe everywhere.
+//
+// Returns true if any role was rewritten.
+func (r *GeneralOpenAIRequest) NormalizeMessageRoles() bool {
+	if r == nil {
+		return false
+	}
+	modified := false
+	for i := range r.Messages {
+		if r.Messages[i].Role == "developer" {
+			r.Messages[i].Role = "system"
+			modified = true
+		}
+	}
+	return modified
+}
+
 // RepairToolCallIDs assigns synthetic ids to assistant tool_calls that carry
 // EMPTY ids, and rewrites the paired tool responses' tool_call_ids so the
 // call/response pairing survives. Without this, history replayed from clients
