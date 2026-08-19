@@ -367,3 +367,86 @@ func TestRepairOrphanedToolCalls_MixedOrphanedAndValid(t *testing.T) {
 		t.Error("expected synthetic tool response for call_3")
 	}
 }
+
+// --- RepairToolCallIDs ------------------------------------------------------
+
+// The observed ds2/xiaomi-mimo failure: tool_call continuation fragments
+// carry `id: null`, the client clobbers its captured id, and the replayed
+// history carries tool_calls with EMPTY ids plus tool responses with empty
+// tool_call_ids. Upstreams reject that with "duplicate tool_call id: " /
+// "missing messages.tool_calls.id".
+func TestRepairToolCallIDs_SynthesizesForEmptyIDsAndPairsResponses(t *testing.T) {
+	req := &GeneralOpenAIRequest{
+		Messages: []Message{
+			{Role: "user", Content: "weather in Tokyo and Paris"},
+			{Role: "assistant", ToolCalls: []Tool{
+				{Id: "", Type: "function", Function: Function{Name: "get_weather", Arguments: `{"city":"Tokyo"}`}},
+				{Id: "", Type: "function", Function: Function{Name: "get_weather", Arguments: `{"city":"Paris"}`}},
+			}},
+			{Role: "tool", ToolCallId: "", Content: `{"temp":18}`},
+			{Role: "tool", ToolCallId: "", Content: `{"temp":21}`},
+			{Role: "assistant", Content: "Tokyo 18, Paris 21"},
+		},
+	}
+
+	if !req.RepairToolCallIDs() {
+		t.Fatal("expected modification for empty tool call ids")
+	}
+
+	callIDs := make([]string, 0, 2)
+	for _, tc := range req.Messages[1].ToolCalls {
+		if tc.Id == "" {
+			t.Error("assistant tool_call id still empty after repair")
+		}
+		callIDs = append(callIDs, tc.Id)
+	}
+	if callIDs[0] == callIDs[1] {
+		t.Errorf("synthetic ids must be unique, got %q twice", callIDs[0])
+	}
+	// Paired tool responses receive the synthetic ids positionally.
+	if req.Messages[2].ToolCallId != callIDs[0] {
+		t.Errorf("tool response 1 tool_call_id = %q, want %q", req.Messages[2].ToolCallId, callIDs[0])
+	}
+	if req.Messages[3].ToolCallId != callIDs[1] {
+		t.Errorf("tool response 2 tool_call_id = %q, want %q", req.Messages[3].ToolCallId, callIDs[1])
+	}
+}
+
+func TestRepairToolCallIDs_LeavesValidHistoryUntouched(t *testing.T) {
+	req := &GeneralOpenAIRequest{
+		Messages: []Message{
+			{Role: "user", Content: "hi"},
+			{Role: "assistant", ToolCalls: []Tool{
+				{Id: "call_valid_1", Type: "function", Function: Function{Name: "f", Arguments: "{}"}},
+			}},
+			{Role: "tool", ToolCallId: "call_valid_1", Content: "ok"},
+		},
+	}
+	if req.RepairToolCallIDs() {
+		t.Error("valid history must not be modified")
+	}
+	if req.Messages[1].ToolCalls[0].Id != "call_valid_1" {
+		t.Errorf("valid id was rewritten: %q", req.Messages[1].ToolCalls[0].Id)
+	}
+}
+
+// Integration: after RepairToolCallIDs, RepairOrphanedToolCalls must see a
+// consistent call/response pairing (no synthetic responses inserted).
+func TestRepairToolCallIDs_IntegrationWithOrphanRepair(t *testing.T) {
+	req := &GeneralOpenAIRequest{
+		Messages: []Message{
+			{Role: "user", Content: "hi"},
+			{Role: "assistant", ToolCalls: []Tool{
+				{Id: "", Type: "function", Function: Function{Name: "f", Arguments: "{}"}},
+			}},
+			{Role: "tool", ToolCallId: "", Content: "ok"},
+		},
+	}
+	req.RepairToolCallIDs()
+	// The pairing is intact, so orphan repair must not grow the history.
+	before := len(req.Messages)
+	req.RepairOrphanedToolCalls()
+	if len(req.Messages) != before {
+		t.Errorf("orphan repair modified a repaired history: %d -> %d messages", before, len(req.Messages))
+	}
+}
