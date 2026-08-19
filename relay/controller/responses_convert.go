@@ -680,11 +680,71 @@ func convertResponsesToChatCompletions(request *ResponsesRequest) (*relaymodel.G
 	}
 	ensureMessageIDs(ptrs)
 
+	// 6. sanitizeChatTools - Responses built-in tool declarations have no
+	// chat equivalent and must not reach the chat wire format.
+	tools, toolChoice := sanitizeChatTools(request.Tools, request.ToolChoice)
+
 	return &relaymodel.GeneralOpenAIRequest{
 		Model:      request.Model,
 		Stream:     request.Stream,
 		Messages:   messages,
-		Tools:      request.Tools,
-		ToolChoice: request.ToolChoice,
+		Tools:      tools,
+		ToolChoice: toolChoice,
 	}, nil
+}
+
+// sanitizeChatTools keeps only function tool declarations with a
+// non-empty name. The Responses API also carries BUILT-IN tool types —
+// `{"type":"local_shell"}`, `{"type":"apply_patch"}`,
+// `{"type":"web_search"}`, ... — which have no `function` object at all.
+// Chat upstreams validate every tools[] entry as a function and reject
+// the verbatim passthrough with
+//
+//	missing `tools.function.name` parameter  (volc Ark, dashscope)
+//
+// Built-ins are dropped (a chat upstream cannot honor them anyway); a
+// tool_choice that names a dropped tool is reset so it does not dangle.
+func sanitizeChatTools(tools []relaymodel.Tool, toolChoice any) ([]relaymodel.Tool, any) {
+	out := make([]relaymodel.Tool, 0, len(tools))
+	for _, t := range tools {
+		// Chat tools commonly omit "type"; treat "" as function.
+		if t.Type != "" && t.Type != "function" {
+			continue
+		}
+		if t.Function.Name == "" {
+			continue
+		}
+		out = append(out, t)
+	}
+	if len(out) == 0 {
+		return nil, toolChoiceIfAuto(toolChoice)
+	}
+	return out, sanitizeToolChoice(toolChoice, out)
+}
+
+// toolChoiceIfAuto keeps a string tool_choice ("auto"/"none"/"required")
+// even when no tools remain — it is still valid — but drops an object
+// choice, which necessarily names a now-missing function.
+func toolChoiceIfAuto(toolChoice any) any {
+	if s, ok := toolChoice.(string); ok {
+		return s
+	}
+	return nil
+}
+
+// sanitizeToolChoice drops an object tool_choice whose named function is
+// not present in the sanitized tools list.
+func sanitizeToolChoice(toolChoice any, tools []relaymodel.Tool) any {
+	choice, ok := toolChoice.(map[string]any)
+	if !ok {
+		return toolChoice
+	}
+	fn, _ := choice["function"].(map[string]any)
+	name, _ := fn["name"].(string)
+	for _, t := range tools {
+		if t.Function.Name == name {
+			return toolChoice
+		}
+	}
+	return nil
 }
