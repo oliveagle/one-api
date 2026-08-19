@@ -1593,3 +1593,63 @@ func TestSanitizeToolChoice_DropsDanglingObjectChoice(t *testing.T) {
 		t.Errorf("string tool_choice must pass through, got %v", got)
 	}
 }
+
+// Newer clients send function_call_output.output as an ARRAY of content
+// blocks instead of the classic string; both must convert (the array is
+// flattened to text — a chat tool message content must be a string).
+func TestConvertFunctionCallOutputItem_ArrayOutput(t *testing.T) {
+	raw := `{"model":"m","input":[
+		{"type":"function_call","call_id":"c1","name":"shell","arguments":"{\"cmd\":\"ls\"}"},
+		{"type":"function_call_output","call_id":"c1","output":[
+			{"type":"output_text","text":"file-a\n"},
+			{"type":"output_text","text":"file-b"}]}]}`
+	var req ResponsesRequest
+	if err := json.Unmarshal([]byte(raw), &req); err != nil {
+		t.Fatalf("unmarshal request: %v", err)
+	}
+	converted, err := convertResponsesToChatCompletions(&req)
+	if err != nil {
+		t.Fatalf("conversion failed on array output: %v", err)
+	}
+	// The tool message content must be the flattened text string.
+	var toolMsg *model.Message
+	for i := range converted.Messages {
+		if converted.Messages[i].Role == "tool" {
+			toolMsg = &converted.Messages[i]
+			break
+		}
+	}
+	if toolMsg == nil {
+		t.Fatal("no tool message in converted request")
+	}
+	content, ok := toolMsg.Content.(string)
+	if !ok {
+		t.Fatalf("tool content = %T, want flattened string", toolMsg.Content)
+	}
+	if content != "file-a\nfile-b" {
+		t.Errorf("flattened content = %q, want %q", content, "file-a\nfile-b")
+	}
+}
+
+func TestConvertFunctionCallOutputItem_StringArrayOutput(t *testing.T) {
+	raw := `{"model":"m","input":[
+		{"type":"function_call","call_id":"c1","name":"shell","arguments":"{}"},
+		{"type":"function_call_output","call_id":"c1","output":["line1","line2"]}]}`
+	var req ResponsesRequest
+	if err := json.Unmarshal([]byte(raw), &req); err != nil {
+		t.Fatal(err)
+	}
+	converted, err := convertResponsesToChatCompletions(&req)
+	if err != nil {
+		t.Fatalf("conversion failed: %v", err)
+	}
+	for i := range converted.Messages {
+		if converted.Messages[i].Role == "tool" {
+			if content, ok := converted.Messages[i].Content.(string); !ok || content != "line1line2" {
+				t.Errorf("tool content = %v, want %q", converted.Messages[i].Content, "line1line2")
+			}
+			return
+		}
+	}
+	t.Fatal("no tool message")
+}

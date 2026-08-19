@@ -48,10 +48,15 @@ type ResponseFunctionCallItem struct {
 
 // ResponseFunctionCallOutputItem represents the output of a function call,
 // supplied by the caller to feed back into the conversation.
+//
+// `output` is a string in the classic Responses API, but newer clients
+// send an array of content blocks ([{"type":"output_text","text":...},
+// {"type":"output_image",...}]). Accept both; the array is flattened to
+// text at conversion time (see convertFunctionCallOutputItem).
 type ResponseFunctionCallOutputItem struct {
 	Type   ResponseItemType `json:"type"`
 	CallID string           `json:"call_id"`
-	Output string           `json:"output"`
+	Output any              `json:"output"`
 }
 
 // ResponseReasoningItem represents an internal reasoning step. Reasoning items
@@ -250,6 +255,12 @@ func flattenResponsesContent(content any) any {
 	var parts []map[string]any
 	hasImage := false
 	for _, b := range blocks {
+		// Bare string elements (e.g. function_call_output arrays that
+		// are plain strings, not blocks) carry text directly.
+		if s, ok := b.(string); ok {
+			parts = append(parts, map[string]any{"type": "text", "text": s})
+			continue
+		}
 		m, ok := b.(map[string]any)
 		if !ok {
 			continue
@@ -307,7 +318,7 @@ func convertFunctionCallItem(item ResponseFunctionCallItem) ([]relaymodel.Messag
 func convertFunctionCallOutputItem(item ResponseFunctionCallOutputItem) ([]relaymodel.Message, error) {
 	msg := relaymodel.Message{
 		Role:       "tool",
-		Content:    item.Output,
+		Content:    flattenResponsesContent(item.Output),
 		ToolCallId: item.CallID,
 	}
 	return []relaymodel.Message{msg}, nil
