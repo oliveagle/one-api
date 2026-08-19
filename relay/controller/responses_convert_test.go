@@ -301,13 +301,46 @@ func TestConvertMessageItem_ArrayContent(t *testing.T) {
 	if len(msgs) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(msgs))
 	}
-	// Content is preserved as-is (passthrough).
-	contentArr, ok := msgs[0].Content.([]any)
+	// Text-only Responses blocks flatten to a plain string — the chat
+	// wire format must not carry `type:"input_text"` blocks (xiaomi mimo
+	// et al. reject them with a 400).
+	content, ok := msgs[0].Content.(string)
 	if !ok {
-		t.Fatalf("expected content to be []any, got %T", msgs[0].Content)
+		t.Fatalf("expected flattened string content, got %T", msgs[0].Content)
 	}
-	if len(contentArr) != 1 {
-		t.Fatalf("expected 1 content block, got %d", len(contentArr))
+	if content != "What is this?" {
+		t.Errorf("flattened content = %q, want %q", content, "What is this?")
+	}
+}
+
+// Mixed text/image content maps onto chat-format parts (type:"text" /
+// type:"image_url") — never the Responses block vocabulary.
+func TestConvertMessageItem_ImageContent(t *testing.T) {
+	item := ResponseMessageItem{
+		Type: ResponseItemTypeMessage,
+		Role: "user",
+		Content: []any{
+			map[string]any{"type": "input_text", "text": "describe"},
+			map[string]any{"type": "input_image", "image_url": "https://example.com/cat.png"},
+		},
+	}
+	msgs, err := convertMessageItem(item)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	parts, ok := msgs[0].Content.([]map[string]any)
+	if !ok {
+		t.Fatalf("expected chat parts, got %T", msgs[0].Content)
+	}
+	if len(parts) != 2 {
+		t.Fatalf("expected 2 parts, got %d", len(parts))
+	}
+	if parts[0]["type"] != "text" || parts[0]["text"] != "describe" {
+		t.Errorf("text part = %v", parts[0])
+	}
+	img, ok := parts[1]["image_url"].(map[string]any)
+	if !ok || parts[1]["type"] != "image_url" || img["url"] != "https://example.com/cat.png" {
+		t.Errorf("image part = %v", parts[1])
 	}
 }
 
