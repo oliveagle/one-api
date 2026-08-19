@@ -67,6 +67,49 @@ func (r *GeneralOpenAIRequest) NormalizeMessageRoles() bool {
 	return modified
 }
 
+// NormalizeMessageContentTypes renames Responses API content part types to
+// their Chat Completions equivalents.
+//
+// The Responses API labels text parts "input_text"/"output_text"; the Chat
+// Completions schema only knows "text"/"image_url"/... Requests converted
+// from Responses to Chat (relayResponsesConvertToChat) carry the part types
+// verbatim, and strict upstreams reject them, e.g. Volcano Ark coding v3
+// (observed 2026-08-19):
+//
+//	The parameter `messages.content.type` ... invalid value: `input_text`,
+//	supported values are: `text`, `image_url`, `video_url`, `input_audio`, `file`
+//
+// (Ark's chat endpoint accepts a "text"-typed parts array fine — only the
+// Responses type names are rejected — so renaming is enough; no need to
+// collapse text-only arrays to plain strings.)
+//
+// String content, non-part arrays and non-text parts (image_url, ...) are
+// left untouched. Returns true if any part type was rewritten.
+func (r *GeneralOpenAIRequest) NormalizeMessageContentTypes() bool {
+	if r == nil {
+		return false
+	}
+	modified := false
+	for i := range r.Messages {
+		parts, ok := r.Messages[i].Content.([]any)
+		if !ok {
+			continue
+		}
+		for _, part := range parts {
+			obj, ok := part.(map[string]any)
+			if !ok {
+				continue
+			}
+			switch obj["type"] {
+			case "input_text", "output_text":
+				obj["type"] = "text"
+				modified = true
+			}
+		}
+	}
+	return modified
+}
+
 // RepairToolCallIDs assigns synthetic ids to assistant tool_calls that carry
 // EMPTY ids, and rewrites the paired tool responses' tool_call_ids so the
 // call/response pairing survives. Without this, history replayed from clients

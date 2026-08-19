@@ -485,3 +485,56 @@ func TestNormalizeMessageRoles_NoDeveloperLeavesRequestUntouched(t *testing.T) {
 		t.Error("request without developer role must not be modified")
 	}
 }
+
+func TestNormalizeMessageContentTypes_ResponseNamesToChat(t *testing.T) {
+	req := &GeneralOpenAIRequest{
+		Messages: []Message{
+			{Role: "system", Content: []any{
+				map[string]any{"type": "input_text", "text": "AGENTS.md"},
+			}},
+			{Role: "user", Content: []any{
+				map[string]any{"type": "input_text", "text": "hi"},
+			}},
+			{Role: "assistant", Content: []any{
+				map[string]any{"type": "output_text", "text": "hello"},
+			}},
+			// Already chat-shaped parts must pass through untouched.
+			{Role: "user", Content: []any{
+				map[string]any{"type": "text", "text": "chat style"},
+				map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64,x"}},
+			}},
+			// String content must not be touched.
+			{Role: "user", Content: "plain"},
+		},
+	}
+	if !req.NormalizeMessageContentTypes() {
+		t.Fatal("expected modification for Responses part types")
+	}
+	for i, want := range []string{"text", "text", "text"} {
+		parts := req.Messages[i].Content.([]any)
+		if got := parts[0].(map[string]any)["type"]; got != want {
+			t.Errorf("message %d part type = %v, want %q", i, got, want)
+		}
+	}
+	parts := req.Messages[3].Content.([]any)
+	if parts[0].(map[string]any)["type"] != "text" || parts[1].(map[string]any)["type"] != "image_url" {
+		t.Errorf("chat-shaped parts were rewritten: %v", parts)
+	}
+	if req.Messages[4].Content != "plain" {
+		t.Errorf("string content was rewritten: %v", req.Messages[4].Content)
+	}
+}
+
+func TestNormalizeMessageContentTypes_ChatOnlyLeavesRequestUntouched(t *testing.T) {
+	req := &GeneralOpenAIRequest{
+		Messages: []Message{
+			{Role: "system", Content: "sys"},
+			{Role: "user", Content: []any{
+				map[string]any{"type": "text", "text": "chat style"},
+			}},
+		},
+	}
+	if req.NormalizeMessageContentTypes() {
+		t.Error("request without Responses part types must not be modified")
+	}
+}
