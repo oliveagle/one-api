@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/songquanpeng/one-api/relay/constant/role"
@@ -220,13 +221,64 @@ func convertResponseItemToMessage(item any) ([]relaymodel.Message, error) {
 }
 
 // convertMessageItem converts a ResponseMessageItem to a Chat message.
-// Role is passed through as-is (user, assistant, system).
+// Role is passed through as-is (user, assistant, system); content blocks
+// are flattened onto the Chat vocabulary (see flattenResponsesContent) —
+// the Responses block types must NOT leak into the chat wire format.
 func convertMessageItem(item ResponseMessageItem) ([]relaymodel.Message, error) {
 	msg := relaymodel.Message{
 		Role:    item.Role,
-		Content: item.Content,
+		Content: flattenResponsesContent(item.Content),
 	}
 	return []relaymodel.Message{msg}, nil
+}
+
+// flattenResponsesContent maps Responses content blocks onto the Chat
+// Completions content vocabulary. The Responses API carries content as
+// typed blocks (input_text / output_text / input_image); chat requests
+// only accept a plain string or text/image_url parts — strict upstreams
+// (xiaomi mimo and friends) reject Responses-shaped blocks
+// (`type:"input_text"`) with a 400 and a non-OpenAI error body.
+//
+// Text-only content collapses to a plain string (universally accepted);
+// content containing images becomes chat-format parts.
+func flattenResponsesContent(content any) any {
+	blocks, ok := content.([]any)
+	if !ok {
+		// Already a plain string or another passthrough shape.
+		return content
+	}
+	var parts []map[string]any
+	hasImage := false
+	for _, b := range blocks {
+		m, ok := b.(map[string]any)
+		if !ok {
+			continue
+		}
+		switch m["type"] {
+		case "input_text", "text", "output_text", "summary_text":
+			parts = append(parts, map[string]any{"type": "text", "text": m["text"]})
+		case "input_image":
+			hasImage = true
+			url := m["image_url"]
+			if u, ok := url.(map[string]any); ok {
+				url = u["url"]
+			}
+			parts = append(parts, map[string]any{
+				"type":      "image_url",
+				"image_url": map[string]any{"url": url},
+			})
+		}
+	}
+	if !hasImage {
+		var sb strings.Builder
+		for _, p := range parts {
+			if t, ok := p["text"].(string); ok {
+				sb.WriteString(t)
+			}
+		}
+		return sb.String()
+	}
+	return parts
 }
 
 // convertFunctionCallItem converts a ResponseFunctionCallItem to an assistant

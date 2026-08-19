@@ -48,6 +48,13 @@ func getAndValidateTextRequest(c *gin.Context, relayMode int) (*relaymodel.Gener
 			logger.Infof(ctx, "normalized developer role to system")
 			modified = true
 		}
+		// Responses-origin requests (converted by relayResponsesConvertToChat,
+		// or clients echoing Responses items into chat) label text parts
+		// input_text/output_text; chat upstreams only know "text".
+		if textRequest.NormalizeMessageContentTypes() {
+			logger.Infof(ctx, "normalized message content part types to chat schema")
+			modified = true
+		}
 		// codex-cli 0.142 chat emitter sends function.arguments as a JSON object;
 		// the spec (and every upstream) requires a string. Normalise once here.
 		if textRequest.NormalizeToolCallArguments() {
