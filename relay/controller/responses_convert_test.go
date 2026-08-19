@@ -1537,3 +1537,59 @@ func TestConvertResponsesRequestToChat_SetsConvertedFlag(t *testing.T) {
 		t.Errorf("tool name not preserved: %+v", body.Tools[0])
 	}
 }
+
+// Responses built-in tool declarations (local_shell / apply_patch /
+// web_search) carry no function object; chat upstreams reject them with
+// "missing tools.function.name" (volc Ark). The conversion must keep
+// only function tools and reset a dangling object tool_choice.
+func TestConvertResponsesToChatCompletions_DropsBuiltInToolTypes(t *testing.T) {
+	raw := `{"model":"m","input":"hi","tools":[
+		{"type":"local_shell"},
+		{"type":"function","function":{"name":"shell","parameters":{"type":"object","properties":{"cmd":{"type":"string"}}}}},
+		{"type":"web_search"}
+	]}`
+	var req ResponsesRequest
+	if err := json.Unmarshal([]byte(raw), &req); err != nil {
+		t.Fatal(err)
+	}
+	converted, err := convertResponsesToChatCompletions(&req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(converted.Tools) != 1 {
+		t.Fatalf("expected only the function tool to survive, got %d: %+v", len(converted.Tools), converted.Tools)
+	}
+	if converted.Tools[0].Function.Name != "shell" {
+		t.Errorf("surviving tool = %q, want shell", converted.Tools[0].Function.Name)
+	}
+}
+
+func TestConvertResponsesToChatCompletions_AllBuiltInToolsYieldNilTools(t *testing.T) {
+	raw := `{"model":"m","input":"hi","tools":[{"type":"local_shell"}]}`
+	var req ResponsesRequest
+	if err := json.Unmarshal([]byte(raw), &req); err != nil {
+		t.Fatal(err)
+	}
+	converted, err := convertResponsesToChatCompletions(&req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if converted.Tools != nil {
+		t.Errorf("expected nil tools after dropping built-ins, got %+v", converted.Tools)
+	}
+}
+
+func TestSanitizeToolChoice_DropsDanglingObjectChoice(t *testing.T) {
+	tools := []model.Tool{{Type: "function", Function: model.Function{Name: "shell"}}}
+	choice := map[string]any{"type": "function", "function": map[string]any{"name": "local_shell"}}
+	if got := sanitizeToolChoice(choice, tools); got != nil {
+		t.Errorf("dangling tool_choice must be dropped, got %v", got)
+	}
+	keep := map[string]any{"type": "function", "function": map[string]any{"name": "shell"}}
+	if got := sanitizeToolChoice(keep, tools); got == nil {
+		t.Error("tool_choice naming a present tool must be kept")
+	}
+	if got := sanitizeToolChoice("auto", tools); got != "auto" {
+		t.Errorf("string tool_choice must pass through, got %v", got)
+	}
+}
