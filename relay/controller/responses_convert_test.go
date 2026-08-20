@@ -1556,15 +1556,23 @@ func TestConvertResponsesToChatCompletions_DropsBuiltInToolTypes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(converted.Tools) != 1 {
-		t.Fatalf("expected only the function tool to survive, got %d: %+v", len(converted.Tools), converted.Tools)
+	// local_shell is synthesized INTO the shell function; web_search
+	// (no chat equivalent) is dropped.
+	if len(converted.Tools) != 2 {
+		t.Fatalf("expected shell + synthesized local_shell->shell, got %d: %+v", len(converted.Tools), converted.Tools)
 	}
 	if converted.Tools[0].Function.Name != "shell" {
-		t.Errorf("surviving tool = %q, want shell", converted.Tools[0].Function.Name)
+		t.Errorf("first tool = %q, want shell", converted.Tools[0].Function.Name)
+	}
+	if converted.Tools[1].Function.Name != "shell" {
+		t.Errorf("local_shell must synthesize a shell function, got %q", converted.Tools[1].Function.Name)
 	}
 }
 
-func TestConvertResponsesToChatCompletions_AllBuiltInToolsYieldNilTools(t *testing.T) {
+// A local_shell-only request converts to a synthesized shell function
+// (the coding-plan models' native tool shape) — NOT nil tools, which
+// would make the model print unparseable textual tool calls.
+func TestConvertResponsesToChatCompletions_LocalShellSynthesizesShellFunction(t *testing.T) {
 	raw := `{"model":"m","input":"hi","tools":[{"type":"local_shell"}]}`
 	var req ResponsesRequest
 	if err := json.Unmarshal([]byte(raw), &req); err != nil {
@@ -1574,8 +1582,32 @@ func TestConvertResponsesToChatCompletions_AllBuiltInToolsYieldNilTools(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if converted.Tools != nil {
-		t.Errorf("expected nil tools after dropping built-ins, got %+v", converted.Tools)
+	if len(converted.Tools) != 1 || converted.Tools[0].Function.Name != "shell" {
+		t.Fatalf("expected one synthesized shell function, got %+v", converted.Tools)
+	}
+}
+
+// The Responses API declares function tools FLAT (name/parameters at
+// the top level); the converter must see them as real tools, not
+// empty-name candidates for the sanitizer to drop.
+func TestConvertResponsesToChatCompletions_FlatFunctionTools(t *testing.T) {
+	raw := `{"model":"m","input":"hi","tools":[
+		{"type":"function","name":"shell","description":"Run a command","parameters":{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}},
+		{"type":"function","name":"read_file","parameters":{"type":"object","properties":{"path":{"type":"string"}}}}]}`
+	var req ResponsesRequest
+	if err := json.Unmarshal([]byte(raw), &req); err != nil {
+		t.Fatal(err)
+	}
+	converted, err := convertResponsesToChatCompletions(&req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(converted.Tools) != 2 {
+		t.Fatalf("flat tools must survive conversion, got %d: %+v", len(converted.Tools), converted.Tools)
+	}
+	if converted.Tools[0].Function.Name != "shell" || converted.Tools[1].Function.Name != "read_file" {
+		t.Errorf("flat tool names = %q, %q; want shell, read_file",
+			converted.Tools[0].Function.Name, converted.Tools[1].Function.Name)
 	}
 }
 
