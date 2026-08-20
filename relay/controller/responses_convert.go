@@ -718,6 +718,46 @@ func convertResponsesToChatCompletions(request *ResponsesRequest) (*relaymodel.G
 func sanitizeChatTools(tools []relaymodel.Tool, toolChoice any) ([]relaymodel.Tool, any) {
 	out := make([]relaymodel.Tool, 0, len(tools))
 	for _, t := range tools {
+		// The Responses local_shell built-in converts to the shell
+		// function the coding-plan models are trained on (they emit
+		// exactly `shell(command, workdir)` — visible in their textual
+		// fallback protocol). Without a callable tool the model prints
+		// textual tool calls the client cannot parse.
+		if t.Type == "local_shell" {
+			out = append(out, relaymodel.Tool{
+				Type: "function",
+				Function: relaymodel.Function{
+					Name:        "shell",
+					Description: "Run a shell command",
+					Parameters: map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"command": map[string]any{"type": "string"},
+							"workdir": map[string]any{"type": "string"},
+						},
+						"required": []string{"command"},
+					},
+				},
+			})
+			continue
+		}
+		if t.Type == "apply_patch" {
+			out = append(out, relaymodel.Tool{
+				Type: "function",
+				Function: relaymodel.Function{
+					Name:        "apply_patch",
+					Description: "Apply a patch to files",
+					Parameters: map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"patch": map[string]any{"type": "string"},
+						},
+						"required": []string{"patch"},
+					},
+				},
+			})
+			continue
+		}
 		// Chat tools commonly omit "type"; treat "" as function.
 		if t.Type != "" && t.Type != "function" {
 			continue
