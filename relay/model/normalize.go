@@ -370,22 +370,59 @@ const ReasoningContentPlaceholder = "Tool execution in progress"
 
 // NormalizeReasoningContent ensures every thinking-mode assistant message
 // (one that carries tool_calls and an empty content) includes a
-// `reasoning_content` field. Returns true if any message was modified.
-func (r *GeneralOpenAIRequest) NormalizeReasoningContent() bool {
+// `reasoning_content` field, unless the channel opted out.
+//
+// Echo collapse (always on): thinking upstreams ECHO the injected
+// placeholder back as part of their own reasoning output ("<think>Tool
+// execution in progress..."), clients persist that, and each subsequent
+// turn replays and re-echoes it — measured snowballing to 745 repeats in
+// one real session (oleworkstation01, 2026-08-20). Every placeholder
+// occurrence is therefore stripped from incoming reasoning_content before
+// the request is forwarded; content that consisted ONLY of placeholders is
+// dropped so the injection below can restore exactly one copy when the
+// channel requires it.
+//
+// skipInjection (channel config `skip_reasoning_injection`) disables the
+// placeholder injection for channels that do not require reasoning_content
+// back (verified: dashscope/volc/minimax/xiaomi/kimi accept turns without
+// it). Set it on echo-prone channels to stop the placeholder from ever
+// entering their context.
+func (r *GeneralOpenAIRequest) NormalizeReasoningContent(skipInjection bool) bool {
 	if r == nil {
 		return false
 	}
 	modified := false
 	for i := range r.Messages {
 		msg := &r.Messages[i]
-		if msg.Role != "assistant" || len(msg.ToolCalls) == 0 {
+		if msg.Role != "assistant" {
 			continue
 		}
-		hasReasoning := msg.ReasoningContent != nil
-		if !hasReasoning {
+		if s, ok := msg.ReasoningContent.(string); ok {
+			// A lone exact placeholder is already the canonical injected
+			// form — leave it (keeps the pass idempotent).
+			if s != ReasoningContentPlaceholder && strings.Contains(s, ReasoningContentPlaceholder) {
+				collapsed := strings.TrimSpace(
+					strings.ReplaceAll(s, ReasoningContentPlaceholder, ""))
+				if collapsed == "" {
+					msg.ReasoningContent = nil
+				} else {
+					msg.ReasoningContent = collapsed
+				}
+				modified = true
+			}
+		}
+		if !skipInjection && len(msg.ToolCalls) > 0 && isEmptyReasoning(msg.ReasoningContent) {
 			msg.ReasoningContent = ReasoningContentPlaceholder
 			modified = true
 		}
 	}
 	return modified
+}
+
+func isEmptyReasoning(v any) bool {
+	if v == nil {
+		return true
+	}
+	s, ok := v.(string)
+	return ok && strings.TrimSpace(s) == ""
 }

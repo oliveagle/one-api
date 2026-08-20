@@ -62,6 +62,10 @@ type ChannelConfig struct {
 	// refuse to expose account balance to the regular API key and require a
 	// separate system access token instead.
 	ManageKey string `json:"manage_key,omitempty"`
+	// SkipReasoningInjection disables the reasoning_content placeholder
+	// injection for channels that do not require thinking-mode turns to
+	// carry reasoning back (echo-prone channels snowball the placeholder).
+	SkipReasoningInjection bool `json:"skip_reasoning_injection,omitempty"`
 }
 
 func GetAllChannels(startIdx int, num int, scope string) ([]*Channel, error) {

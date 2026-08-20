@@ -2,6 +2,7 @@ package model
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -254,7 +255,7 @@ func TestNormalizeReasoningContent(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 
-	modified := req.NormalizeReasoningContent()
+	modified := req.NormalizeReasoningContent(false)
 	if !modified {
 		t.Fatalf("expected modified=true")
 	}
@@ -273,7 +274,7 @@ func TestNormalizeReasoningContent(t *testing.T) {
 	}
 
 	// second call: already normalized -> no more modification
-	if req.NormalizeReasoningContent() {
+	if req.NormalizeReasoningContent(false) {
 		t.Fatalf("expected no modification on second pass")
 	}
 }
@@ -588,5 +589,61 @@ func TestRepairToolCallFunctionNames_MultiToolsGetPlaceholders(t *testing.T) {
 	}
 	if names[2] != "unknown_tool_2" {
 		t.Errorf("second empty name = %q, want unknown_tool_2", names[2])
+	}
+}
+
+// The echo snowball (observed live on oleworkstation01, 2026-08-20):
+// thinking upstreams echo the injected placeholder back inside their own
+// reasoning ("<think>Tool execution in progress..."), clients persist it,
+// and each replay grows the string — 745 repeats in one session.
+func TestNormalizeReasoningContent_CollapsesEchoedPlaceholders(t *testing.T) {
+	req := &GeneralOpenAIRequest{
+		Messages: []Message{
+			{Role: "assistant", ToolCalls: []Tool{{Id: "c1", Function: Function{Name: "f"}}},
+				ReasoningContent: ReasoningContentPlaceholder + ReasoningContentPlaceholder + ReasoningContentPlaceholder},
+			{Role: "assistant",
+				ReasoningContent: "<think>" + ReasoningContentPlaceholder + "actual thinking continues here"},
+		},
+	}
+	if !req.NormalizeReasoningContent(true) {
+		t.Fatal("expected collapse to modify the messages")
+	}
+	// Placeholder-only content collapses to empty, then (skip=false would
+	// re-inject one; here skip=true) stays empty.
+	if got := req.Messages[0].ReasoningContent; got != nil {
+		t.Errorf("placeholder-only reasoning should collapse to nil, got %v", got)
+	}
+	// Mixed content keeps the real thinking, placeholder stripped.
+	if got, _ := req.Messages[1].ReasoningContent.(string); got != "<think>actual thinking continues here" {
+		t.Errorf("mixed reasoning = %q, want placeholder stripped with real text kept", got)
+	}
+}
+
+func TestNormalizeReasoningContent_SkipInjectionKeepsInjectionOff(t *testing.T) {
+	req := &GeneralOpenAIRequest{
+		Messages: []Message{
+			{Role: "assistant", Content: "", ToolCalls: []Tool{{Id: "c1", Function: Function{Name: "f"}}}},
+		},
+	}
+	if req.NormalizeReasoningContent(true) {
+		t.Error("skipInjection must not modify a request with no placeholders and no injection")
+	}
+	if req.Messages[0].ReasoningContent != nil {
+		t.Errorf("no placeholder should be injected when skipping, got %v", req.Messages[0].ReasoningContent)
+	}
+}
+
+func TestNormalizeReasoningContent_InjectsOneAfterCollapse(t *testing.T) {
+	req := &GeneralOpenAIRequest{
+		Messages: []Message{
+			{Role: "assistant", Content: "", ToolCalls: []Tool{{Id: "c1", Function: Function{Name: "f"}}},
+				ReasoningContent: strings.Repeat(ReasoningContentPlaceholder, 5)},
+		},
+	}
+	if !req.NormalizeReasoningContent(false) {
+		t.Fatal("expected collapse + inject to modify")
+	}
+	if got := req.Messages[0].ReasoningContent; got != ReasoningContentPlaceholder {
+		t.Errorf("after collapse+inject reasoning = %v, want exactly one placeholder", got)
 	}
 }
