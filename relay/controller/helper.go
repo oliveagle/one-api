@@ -15,6 +15,7 @@ import (
 
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/config"
+	"github.com/songquanpeng/one-api/common/ctxkey"
 	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/model"
 	"github.com/songquanpeng/one-api/relay/adaptor/openai"
@@ -83,9 +84,17 @@ func getAndValidateTextRequest(c *gin.Context, relayMode int) (*relaymodel.Gener
 		// Thinking/reasoning upstreams (opencode-go, zhipu GLM-5.2, ...) require
 		// every thinking-mode assistant message (tool_calls + empty content) to
 		// carry a reasoning_content back to the API. The codex chat emitter drops
-		// it, so inject a placeholder on the missing turns.
-		if textRequest.NormalizeReasoningContent() {
-			logger.Infof(ctx, "injected reasoning_content into thinking-mode assistant messages")
+		// it, so inject a placeholder on the missing turns — unless the channel
+		// opted out (echo-prone channels snowball the placeholder otherwise).
+		// Incoming echoes of the placeholder are always collapsed.
+		skipInjection := false
+		if cfgAny, ok := c.Get(ctxkey.Config); ok {
+			if cfg, ok := cfgAny.(model.ChannelConfig); ok {
+				skipInjection = cfg.SkipReasoningInjection
+			}
+		}
+		if textRequest.NormalizeReasoningContent(skipInjection) {
+			logger.Infof(ctx, "normalized reasoning_content (echo collapse%s)", map[bool]string{true: " + placeholder injection skipped", false: " + placeholder injected"}[skipInjection])
 			modified = true
 		}
 	}

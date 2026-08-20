@@ -510,7 +510,7 @@ func injectReasoningContent(reasoning string, messages *[]relaymodel.Message) bo
 	// A thinking turn is an assistant message with tool_calls and missing
 	// reasoning_content; the helper injects the placeholder.
 	tmpReq := &relaymodel.GeneralOpenAIRequest{Messages: *messages}
-	if tmpReq.NormalizeReasoningContent() {
+	if tmpReq.NormalizeReasoningContent(false) {
 		modified = true
 	}
 
