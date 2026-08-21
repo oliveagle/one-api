@@ -65,6 +65,9 @@ const EditChannel = () => {
     vertex_ai_project_id: '',
     vertex_ai_adc: '',
     manage_key: '',
+    support_responses: false,
+    responses_only: false,
+    skip_reasoning_injection: false,
   });
   const handleInputChange = (e, { name, value }) => {
     setInputs((inputs) => ({ ...inputs, [name]: value }));
@@ -79,6 +82,10 @@ const EditChannel = () => {
 
   const handleConfigChange = (e, { name, value }) => {
     setConfig((inputs) => ({ ...inputs, [name]: value }));
+  };
+
+  const handleConfigCheckbox = (e, { name, checked }) => {
+    setConfig((inputs) => ({ ...inputs, [name]: checked }));
   };
 
   const loadChannel = async () => {
@@ -605,6 +612,27 @@ const EditChannel = () => {
                 autoComplete='new-password'
               />
             )}
+
+            <Form.Group inline>
+              <Form.Checkbox
+                checked={config.support_responses === true}
+                label='支持 Responses API（透传 /v1/responses，不做 Chat 转换）'
+                name='support_responses'
+                onChange={handleConfigCheckbox}
+              />
+              <Form.Checkbox
+                checked={config.responses_only === true}
+                label='仅 Responses（上游无 chat 端点；测试按钮走 responses 探测）'
+                name='responses_only'
+                onChange={handleConfigCheckbox}
+              />
+              <Form.Checkbox
+                checked={config.skip_reasoning_injection === true}
+                label='跳过 reasoning 占位符注入（echo 型通道防雪球）'
+                name='skip_reasoning_injection'
+                onChange={handleConfigCheckbox}
+              />
+            </Form.Group>
             {inputs.type !== 33 &&
               inputs.type !== 42 &&
               (batch ? (
