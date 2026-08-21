@@ -66,6 +66,12 @@ type ChannelConfig struct {
 	// injection for channels that do not require thinking-mode turns to
 	// carry reasoning back (echo-prone channels snowball the placeholder).
 	SkipReasoningInjection bool `json:"skip_reasoning_injection,omitempty"`
+	// ResponsesOnly marks a channel whose upstream implements ONLY the
+	// Responses API (POST /v1/responses) with no chat-completions
+	// endpoint. The channel test exercises the responses endpoint for
+	// such channels (the default chat probe would 404 and auto-disable
+	// the channel), and relay routing treats them as native responses.
+	ResponsesOnly bool `json:"responses_only,omitempty"`
 }
 
 func GetAllChannels(startIdx int, num int, scope string) ([]*Channel, error) {

@@ -169,7 +169,7 @@ func upstreamSupportsResponses(meta *meta.Meta) bool {
 	if meta == nil {
 		return false
 	}
-	if meta.Config.SupportResponses {
+	if meta.Config.SupportResponses || meta.Config.ResponsesOnly {
 		return true
 	}
 	return meta.ChannelType == channeltype.AIHubMix

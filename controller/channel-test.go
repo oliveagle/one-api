@@ -66,6 +66,9 @@ func parseTestResponse(resp string) (*openai.TextResponse, string, error) {
 }
 
 func testChannel(ctx context.Context, channel *model.Channel, request *relaymodel.GeneralOpenAIRequest) (responseMessage string, err error, openaiErr *relaymodel.Error) {
+	if cfg, cfgErr := channel.LoadConfig(); cfgErr == nil && cfg.ResponsesOnly {
+		return testChannelResponses(ctx, channel, request)
+	}
 	startTime := time.Now()
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -164,6 +167,104 @@ func testChannel(ctx context.Context, channel *model.Channel, request *relaymode
 	}
 	logger.SysLog(fmt.Sprintf("testing channel #%d, response: \n%s", channel.Id, string(respBody)))
 	return responseMessage, nil, nil
+}
+
+// testChannelResponses probes a Responses-only upstream: the default
+// chat-completions test would 404 (and the periodic tester would
+// auto-disable the channel). Sends a minimal POST /v1/responses through
+// the real adaptor — same URL building as the production passthrough —
+// and reports the first output_text.
+func testChannelResponses(ctx context.Context, channel *model.Channel, request *relaymodel.GeneralOpenAIRequest) (responseMessage string, err error, openaiErr *relaymodel.Error) {
+	startTime := time.Now()
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = &http.Request{
+		Method: "POST",
+		URL:    &url.URL{Path: "/v1/responses"},
+		Body:   nil,
+		Header: make(http.Header),
+	}
+	c.Request.Header.Set("Authorization", "Bearer "+channel.Key)
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Set(ctxkey.Channel, channel.Type)
+	c.Set(ctxkey.BaseURL, channel.GetBaseURL())
+	cfg, _ := channel.LoadConfig()
+	c.Set(ctxkey.Config, cfg)
+	middleware.SetupContextForSelectedChannel(c, channel, "")
+	meta := meta.GetByContext(c)
+	apiType := channeltype.ToAPIType(channel.Type)
+	adaptor := relay.GetAdaptor(apiType)
+	if adaptor == nil {
+		return "", fmt.Errorf("invalid api type: %d, adaptor is nil", apiType), nil
+	}
+	adaptor.Init(meta)
+	modelName := request.Model
+	if modelMap := channel.GetModelMapping(); modelMap != nil && modelMap[modelName] != "" {
+		modelName = modelMap[modelName]
+	}
+	body, jsonErr := json.Marshal(map[string]any{
+		"model":  modelName,
+		"input":  "hi",
+		"stream": false,
+	})
+	if jsonErr != nil {
+		return "", jsonErr, nil
+	}
+	defer func() {
+		logContent := fmt.Sprintf("渠道 %s 测试成功（responses），响应：%s", channel.Name, responseMessage)
+		if err != nil || openaiErr != nil {
+			message := err.Error()
+			if openaiErr != nil && message == "" {
+				message = openaiErr.Message
+			}
+			logContent = fmt.Sprintf("渠道 %s 测试失败（responses），错误：%s", channel.Name, message)
+		}
+		go model.RecordTestLog(ctx, &model.Log{
+			ChannelId:   channel.Id,
+			ModelName:   modelName,
+			Content:     logContent,
+			ElapsedTime: helper.CalcElapsedTime(startTime),
+		})
+	}()
+	resp, reqErr := adaptor.DoRequest(c, meta, bytes.NewReader(body))
+	if reqErr != nil {
+		return "", reqErr, nil
+	}
+	if resp != nil && resp.StatusCode != http.StatusOK {
+		err := controller.RelayErrorHandler(resp)
+		message := err.Error.Message
+		if message != "" {
+			message = ", error message: " + message
+		}
+		return "", fmt.Errorf("http status code: %d%s", resp.StatusCode, message), &err.Error
+	}
+	raw, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		return "", readErr, nil
+	}
+	_ = resp.Body.Close()
+	var parsed struct {
+		Object string `json:"object"`
+		Output []struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"output"`
+	}
+	if jsonErr := json.Unmarshal(raw, &parsed); jsonErr != nil {
+		return "", fmt.Errorf("responses test: body is not a response object: %.120s", string(raw)), nil
+	}
+	if parsed.Object != "response" {
+		return "", fmt.Errorf("responses test: object = %q, want \"response\"", parsed.Object), nil
+	}
+	for _, item := range parsed.Output {
+		for _, part := range item.Content {
+			if part.Text != "" {
+				return part.Text, nil, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("responses test: no output text in response"), nil
 }
 
 func TestChannel(c *gin.Context) {
