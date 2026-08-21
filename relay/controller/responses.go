@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -485,6 +486,7 @@ func relayResponsesStream(c *gin.Context, resp *http.Response) (*relaymodel.Usag
 	common.SetEventStreamHeaders(c)
 
 	var usage *ResponsesUsage
+	sawCompleted := false
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxResponsesStreamLine)
 	scanner.Split(bufio.ScanLines)
@@ -501,9 +503,43 @@ func relayResponsesStream(c *gin.Context, resp *http.Response) (*relaymodel.Usag
 		if found := usageFromSSELine(line); found != nil {
 			usage = found
 		}
+		if strings.Contains(line, "event: response.completed") || strings.Contains(line, "\"type\":\"response.completed\"") {
+			sawCompleted = true
+		}
 	}
 	if err := scanner.Err(); err != nil {
 		logger.Errorf(c.Request.Context(), "error reading Responses stream: %s", err.Error())
+	}
+
+	// Some upstreams (observed: the qwen server behind olehome) end the
+	// SSE stream after response.output_item.done without ever emitting
+	// the terminal response.completed event. Strict Responses clients
+	// (pi-ai, codex) abort with "stream ended before a terminal
+	// response event". Synthesize the missing terminal frame.
+	if !sawCompleted {
+		finalUsage := &ResponsesUsage{}
+		if usage != nil {
+			finalUsage = usage
+		}
+		completed := map[string]any{
+			"type": "response.completed",
+			"response": map[string]any{
+				"id":     fmt.Sprintf("resp_syn_%d", time.Now().UnixNano()),
+				"object": "response",
+				"status": "completed",
+				"usage": map[string]any{
+					"input_tokens":  finalUsage.InputTokens,
+					"output_tokens": finalUsage.OutputTokens,
+					"total_tokens":  finalUsage.TotalTokens,
+				},
+			},
+		}
+		payload, err := json.Marshal(completed)
+		if err == nil {
+			_, _ = fmt.Fprintf(c.Writer, "event: response.completed\ndata: %s\n\n", payload)
+			c.Writer.Flush()
+			logger.Infof(c.Request.Context(), "synthesized terminal response.completed (upstream omitted it)")
+		}
 	}
 
 	if usage == nil {
