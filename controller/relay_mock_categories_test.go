@@ -346,3 +346,40 @@ func TestChannelAddressing_ResponsesWirePassthrough(t *testing.T) {
 		t.Errorf("upstream model = %q, want %q", m, mockModelName)
 	}
 }
+
+func TestChannelAddressing_ResolvesThroughChannelMapping(t *testing.T) {
+	// "channel/listed-model" must resolve through the channel's own
+	// model_mapping, exactly like requesting that model normally would.
+	r := setupMockRelayStackWithOptions(t, mockStackOptions{
+		defaultModel: mockModelName,
+		modelMapping: `{"` + mockModelName + `":"mock-upstream-alias"}`,
+	})
+	rec := doRelayRequest(t, r, "Bearer sk-test", "openai-chat",
+		`{"model":"mock-channel/`+mockModelName+`","messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	if m, _ := resp["model"].(string); m != "mock-upstream-alias" {
+		t.Errorf("upstream model = %q, want mock-upstream-alias (chain through model_mapping)", m)
+	}
+}
+
+func TestChannelAddressing_DefaultModelMayBeUpstreamName(t *testing.T) {
+	// default_model names an upstream model directly — it need NOT appear
+	// in the channel's exposed model list (e.g. volc-1 → deepseek-v4-flash).
+	r := setupMockRelayStackWithOptions(t, mockStackOptions{
+		defaultModel: "raw-upstream-model",
+	})
+	rec := doRelayRequest(t, r, "Bearer sk-test", "openai-chat",
+		`{"model":"mock-channel","messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	if m, _ := resp["model"].(string); m != "raw-upstream-model" {
+		t.Errorf("upstream model = %q, want raw-upstream-model", m)
+	}
+}

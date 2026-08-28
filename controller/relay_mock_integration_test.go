@@ -86,6 +86,9 @@ type mockStackOptions struct {
 	// addressable by its bare name ("mock-channel") — the codex /model
 	// channel-selection use case.
 	defaultModel string
+	// modelMapping seeds the channel's model_mapping JSON (used by the
+	// channel-addressing chain-mapping test).
+	modelMapping string
 }
 
 // setupMockRelayStack is the convenience wrapper for chat-only tests
@@ -176,16 +179,22 @@ func setupMockRelayStackWithOptions(t *testing.T, opts mockStackOptions) *gin.En
 	if opts.defaultModel != "" {
 		channelCfg = fmt.Sprintf(`{"support_responses":true,"default_model":%q}`, opts.defaultModel)
 	}
+	var modelMappingPtr *string
+	if opts.modelMapping != "" {
+		mm := opts.modelMapping
+		modelMappingPtr = &mm
+	}
 	channel := &model.Channel{
-		Id:      1,
-		Type:    channeltype.Mock,
-		Name:    "mock-channel",
-		Status:  model.ChannelStatusEnabled,
-		Group:   "default",
-		Models:  mockModelName,
-		BaseURL: &baseURL,
-		Key:     "not-used-by-mock",
-		Config:  channelCfg,
+		Id:           1,
+		Type:         channeltype.Mock,
+		Name:         "mock-channel",
+		Status:       model.ChannelStatusEnabled,
+		Group:        "default",
+		Models:       mockModelName,
+		BaseURL:      &baseURL,
+		Key:          "not-used-by-mock",
+		Config:       channelCfg,
+		ModelMapping: modelMappingPtr,
 	}
 	if err := channel.Insert(); err != nil {
 		t.Fatalf("seed channel: %v", err)

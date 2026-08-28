@@ -43,7 +43,7 @@ func resolveChannelAddressedModel(group, requestModel string) (*model.Channel, s
 		if !ch.ModelServed(subModel) {
 			return nil, "", fmt.Errorf("模型 %q 不在渠道 %q 的模型列表中", subModel, name)
 		}
-		return ch, subModel, nil
+		return ch, resolveThroughMapping(ch, subModel), nil
 	}
 	cfg, cfgErr := ch.LoadConfig()
 	if cfgErr != nil || cfg.DefaultModel == "" {
@@ -51,10 +51,23 @@ func resolveChannelAddressedModel(group, requestModel string) (*model.Channel, s
 		// instead of hijacking a potentially real model name.
 		return nil, "", nil
 	}
-	if !ch.ModelServed(cfg.DefaultModel) {
-		return nil, "", fmt.Errorf("渠道 %q 的 default_model %q 不在其模型列表中", name, cfg.DefaultModel)
+	// default_model names an UPSTREAM model directly (e.g. volc-1 →
+	// deepseek-v4-flash) — it need not appear in the channel's exposed
+	// model list. If it does (and has a mapping entry), resolve through it.
+	return ch, resolveThroughMapping(ch, cfg.DefaultModel), nil
+}
+
+// resolveThroughMapping maps the addressed model through the channel's own
+// model_mapping when it is a listed name with a mapping entry, so
+// "channel/listed-model" and default_model=listed-model behave exactly like
+// requesting that model through the channel normally would.
+func resolveThroughMapping(ch *model.Channel, model string) string {
+	if mapping := ch.GetModelMapping(); mapping != nil {
+		if mapped, ok := mapping[model]; ok && mapped != "" {
+			return mapped
+		}
 	}
-	return ch, cfg.DefaultModel, nil
+	return model
 }
 
 // looksLikeChannelAddress reports whether the model could be channel
