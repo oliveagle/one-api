@@ -85,9 +85,11 @@ type ChannelConfig struct {
 // GetChannelByName returns the enabled channel whose name matches exactly
 // and serves the given group. Channel-name model addressing uses this to
 // resolve "name" / "name/model" request models to one specific channel.
+// The key IS selected: the addressed channel forwards with its own
+// credential, exactly like an admin-pinned channel id.
 func GetChannelByName(name string, group string) (*Channel, error) {
 	var channels []*Channel
-	if err := DB.Omit("key").Where("name = ? AND status = ?", name, ChannelStatusEnabled).Find(&channels).Error; err != nil {
+	if err := DB.Where("name = ? AND status = ?", name, ChannelStatusEnabled).Find(&channels).Error; err != nil {
 		return nil, err
 	}
 	for _, ch := range channels {
