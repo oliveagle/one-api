@@ -79,6 +79,16 @@ When you add or change how a provider behaves:
   reaches a chat channel.
 - `model.ChannelConfig.SupportResponses` / `.ResponsesOnly` — the
   per-channel flags.
+- Channel-name model addressing (codex /model use case): request model
+  `"channel-name"` serves the channel's `config.default_model`, and
+  `"channel-name/model"` serves any model from that channel's list.
+  Resolved in `middleware.resolveChannelAddressedModel` BEFORE pool
+  routing; a name the pool can already route (`model.IsPoolRoutable`)
+  is never hijacked, so the feature is purely additive. The synthetic
+  mapping rides the normal model_mapping machinery
+  (`ctxkey.ModelMappingOverride`), and /v1/models advertises
+  addressable channel names. Pinned by TestChannelAddressing_* in
+  `relay_mock_categories_test.go`.
 
 ## Test infrastructure notes
 

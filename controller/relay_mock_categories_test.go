@@ -256,3 +256,93 @@ func TestCategoryRouting_FlagControlsPassthroughVsRefusal(t *testing.T) {
 		}
 	})
 }
+
+// ===========================================================================
+// Channel-name model addressing (the codex /model use case)
+//
+// A request model that names a channel pins that one channel: the bare
+// channel name serves its configured default_model, and
+// "channel-name/model" serves any model from the channel's list. Names the
+// pool can already route are never hijacked.
+// ===========================================================================
+
+func TestChannelAddressing_BareNameServesDefaultModel(t *testing.T) {
+	r := setupMockRelayStackWithOptions(t, mockStackOptions{
+		defaultModel: mockModelName,
+	})
+	rec := doRelayRequest(t, r, "Bearer sk-test", "openai-chat",
+		`{"model":"mock-channel","messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("response not JSON: %v", err)
+	}
+	// The upstream must see the channel's default_model, not the bare
+	// channel name (the mock echoes the rewritten wire model).
+	if m, _ := resp["model"].(string); m != mockModelName {
+		t.Errorf("upstream model = %q, want %q (default_model mapping)", m, mockModelName)
+	}
+}
+
+func TestChannelAddressing_ExplicitModelFromChannelList(t *testing.T) {
+	r := setupMockRelayStackWithOptions(t, mockStackOptions{
+		defaultModel: mockModelName,
+	})
+	rec := doRelayRequest(t, r, "Bearer sk-test", "openai-chat",
+		`{"model":"mock-channel/`+mockModelName+`","messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	if m, _ := resp["model"].(string); m != mockModelName {
+		t.Errorf("upstream model = %q, want %q", m, mockModelName)
+	}
+}
+
+func TestChannelAddressing_ModelNotInChannelList(t *testing.T) {
+	r := setupMockRelayStackWithOptions(t, mockStackOptions{
+		defaultModel: mockModelName,
+	})
+	rec := doRelayRequest(t, r, "Bearer sk-test", "",
+		`{"model":"mock-channel/not-a-listed-model","messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (model outside the channel's list); body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "不在渠道") {
+		t.Errorf("error should name the channel/model mismatch: %s", rec.Body.String())
+	}
+}
+
+func TestChannelAddressing_BareNameWithoutDefaultFallsThrough(t *testing.T) {
+	// No default_model configured: the bare channel name must NOT be
+	// hijacked away from pool routing (which then 503s — no ability named
+	// "mock-channel").
+	r := setupMockRelayStackWithOptions(t, mockStackOptions{})
+	rec := doRelayRequest(t, r, "Bearer sk-test", "",
+		`{"model":"mock-channel","messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503 (pool routing owns the name); body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestChannelAddressing_ResponsesWirePassthrough(t *testing.T) {
+	r := setupMockRelayStackWithOptions(t, mockStackOptions{
+		defaultModel:           mockModelName,
+		registerResponsesRoute: true,
+	})
+	rec := doRelayRequestTo(t, r, "/v1/responses", "Bearer sk-test", "openai-responses",
+		`{"model":"mock-channel","input":"hi","stream":false}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	// The passthrough rewrites the model onto default_model before the
+	// upstream sees it.
+	if m, _ := resp["model"].(string); m != mockModelName {
+		t.Errorf("upstream model = %q, want %q", m, mockModelName)
+	}
+}

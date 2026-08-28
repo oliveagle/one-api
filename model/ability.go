@@ -36,7 +36,7 @@ func GetRandomSatisfiedChannel(group string, model string, ignoreFirstPriority b
 		maxPrioritySubQuery := DB.Model(&Ability{}).Select("MAX(priority)").Where(groupCol+" = ? and model = ? and enabled = "+trueVal, group, model)
 		channelQuery = DB.Where(groupCol+" = ? and model = ? and enabled = "+trueVal+" and priority = (?)", group, model, maxPrioritySubQuery)
 	}
-	if common.UsingSQLite || common.UsingPostgreSQL {
+	if common.UsingSQLite || common.UsingPostgreSQL || common.UsingRQLite {
 		err = channelQuery.Order("RANDOM()").First(&ability).Error
 	} else {
 		err = channelQuery.Order("RAND()").First(&ability).Error
@@ -109,4 +109,17 @@ func GetGroupModels(ctx context.Context, group string) ([]string, error) {
 	}
 	sort.Strings(models)
 	return models, err
+}
+
+// IsPoolRoutable reports whether the pool can already serve (group, model)
+// through some enabled channel's abilities. Channel-name addressing defers
+// to it: a name the pool routes is never hijacked as a channel address.
+func IsPoolRoutable(group string, model string) bool {
+	var count int64
+	groupCol, trueVal := "`group`", "1"
+	if common.UsingPostgreSQL {
+		groupCol, trueVal = `"group"`, "true"
+	}
+	DB.Model(&Ability{}).Where(groupCol+" = ? and model = ? and enabled = "+trueVal, group, model).Count(&count)
+	return count > 0
 }

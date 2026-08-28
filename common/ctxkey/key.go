@@ -14,6 +14,10 @@ const (
 	OriginalModel     = "original_model"
 	Group             = "group"
 	ModelMapping      = "model_mapping"
+	// ModelMappingOverride carries the extended model mapping produced by
+	// channel-name addressing (middleware.Distribute); merged into
+	// ctxkey.ModelMapping by SetupContextForSelectedChannel.
+	ModelMappingOverride = "model_mapping_override"
 	ChannelName       = "channel_name"
 	TokenId           = "token_id"
 	TokenName         = "token_name"
