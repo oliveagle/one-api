@@ -2,7 +2,9 @@ package model
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/helper"
@@ -72,6 +74,40 @@ type ChannelConfig struct {
 	// such channels (the default chat probe would 404 and auto-disable
 	// the channel), and relay routing treats them as native responses.
 	ResponsesOnly bool `json:"responses_only,omitempty"`
+	// DefaultModel is the upstream model served when the channel is
+	// addressed by its bare name (request model == channel name), letting
+	// clients whose picker only switches models — not providers (e.g.
+	// codex /model) — select a specific channel. "name/model" addresses
+	// any other model from the channel's list. See middleware.Distribute.
+	DefaultModel string `json:"default_model,omitempty"`
+}
+
+// GetChannelByName returns the enabled channel whose name matches exactly
+// and serves the given group. Channel-name model addressing uses this to
+// resolve "name" / "name/model" request models to one specific channel.
+func GetChannelByName(name string, group string) (*Channel, error) {
+	var channels []*Channel
+	if err := DB.Omit("key").Where("name = ? AND status = ?", name, ChannelStatusEnabled).Find(&channels).Error; err != nil {
+		return nil, err
+	}
+	for _, ch := range channels {
+		for _, g := range strings.Split(ch.Group, ",") {
+			if strings.TrimSpace(g) == group {
+				return ch, nil
+			}
+		}
+	}
+	return nil, errors.New("channel not found")
+}
+
+// ModelServed returns whether model is one of the channel's listed models.
+func (channel *Channel) ModelServed(model string) bool {
+	for _, m := range strings.Split(channel.Models, ",") {
+		if strings.TrimSpace(m) == model {
+			return true
+		}
+	}
+	return false
 }
 
 func GetAllChannels(startIdx int, num int, scope string) ([]*Channel, error) {
@@ -258,4 +294,32 @@ func DeleteChannelByStatus(status int64) (int64, error) {
 func DeleteDisabledChannel() (int64, error) {
 	result := DB.Where("status = ? or status = ?", ChannelStatusAutoDisabled, ChannelStatusManuallyDisabled).Delete(&Channel{})
 	return result.RowsAffected, result.Error
+}
+
+// ChannelAddressedModels lists the bare channel names that are addressable
+// as request models (enabled, serving the group, default_model configured).
+// /v1/models advertises them so client model pickers — e.g. codex /model —
+// can offer per-channel selection.
+func ChannelAddressedModels(group string) []string {
+	var channels []*Channel
+	if err := DB.Omit("key").Where("status = ?", ChannelStatusEnabled).Find(&channels).Error; err != nil {
+		return nil
+	}
+	names := make([]string, 0, len(channels))
+	for _, ch := range channels {
+		servesGroup := false
+		for _, g := range strings.Split(ch.Group, ",") {
+			if strings.TrimSpace(g) == group {
+				servesGroup = true
+				break
+			}
+		}
+		if !servesGroup {
+			continue
+		}
+		if cfg, err := ch.LoadConfig(); err == nil && cfg.DefaultModel != "" {
+			names = append(names, ch.Name)
+		}
+	}
+	return names
 }

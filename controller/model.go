@@ -162,6 +162,25 @@ func ListModels(c *gin.Context) {
 			})
 		}
 	}
+	// Channel-name addressing: advertise addressable channel names so client
+	// pickers (codex /model et al.) can select a specific channel. See
+	// middleware.resolveChannelAddressedModel.
+	if c.GetString(ctxkey.AvailableModels) == "" {
+		if userGroup, err := model.CacheGetUserGroup(c.GetInt(ctxkey.Id)); err == nil {
+			for _, name := range model.ChannelAddressedModels(userGroup) {
+				if _, exists := modelSet[name]; !exists {
+					availableOpenAIModels = append(availableOpenAIModels, OpenAIModels{
+						Id:      name,
+						Object:  "model",
+						Created: 1626777600,
+						OwnedBy: "channel",
+						Root:    name,
+						Parent:  nil,
+					})
+				}
+			}
+		}
+	}
 	c.JSON(200, gin.H{
 		"object": "list",
 		"data":   availableOpenAIModels,

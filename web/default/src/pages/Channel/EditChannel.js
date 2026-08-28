@@ -65,6 +65,7 @@ const EditChannel = () => {
     vertex_ai_project_id: '',
     vertex_ai_adc: '',
     manage_key: '',
+    default_model: '',
     support_responses: false,
     responses_only: false,
     skip_reasoning_injection: false,
@@ -633,6 +634,14 @@ const EditChannel = () => {
                 onChange={handleConfigCheckbox}
               />
             </Form.Group>
+            <Form.Input
+              label='默认模型（default_model）——请求模型=渠道名 时转发到该模型；渠道名/模型名 可访问渠道模型列表'
+              name='default_model'
+              placeholder='例如 deepseek-v4-flash；留空则渠道名不作为模型寻址'
+              onChange={handleConfigChange}
+              value={config.default_model}
+              autoComplete='new-password'
+            />
             {inputs.type !== 33 &&
               inputs.type !== 42 &&
               (batch ? (

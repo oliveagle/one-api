@@ -27,6 +27,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -81,6 +82,10 @@ type mockStackOptions struct {
 	// in addition to /v1/chat/completions. Tests that hit the
 	// Responses endpoint must set this.
 	registerResponsesRoute bool
+	// defaultModel seeds config.default_model so the channel is
+	// addressable by its bare name ("mock-channel") — the codex /model
+	// channel-selection use case.
+	defaultModel string
 }
 
 // setupMockRelayStack is the convenience wrapper for chat-only tests
@@ -167,6 +172,9 @@ func setupMockRelayStackWithOptions(t *testing.T, opts mockStackOptions) *gin.En
 		// responses_only upstreams have no chat endpoint: chat requests
 		// are refused with 503 so the relay fails over to a chat channel.
 		channelCfg = `{"responses_only":true}`
+	}
+	if opts.defaultModel != "" {
+		channelCfg = fmt.Sprintf(`{"support_responses":true,"default_model":%q}`, opts.defaultModel)
 	}
 	channel := &model.Channel{
 		Id:      1,
