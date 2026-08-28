@@ -59,4 +59,10 @@ const (
 	// and apitype.Mock for the dispatch wiring.
 	Mock
 	Dummy
+	// OpenAIResponses is an OpenAI-compatible channel whose upstream serves
+	// the Responses API natively: POST /v1/responses passes through untouched
+	// (like support_responses on an OpenAI 兼容 channel), and chat-completions
+	// requests are refused with 503 so the relay fails over to a chat channel
+	// — protocol conversion between the two APIs has been removed.
+	OpenAIResponses
 )

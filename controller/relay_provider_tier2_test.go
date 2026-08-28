@@ -24,6 +24,7 @@ package controller
 
 import (
 	"net/http"
+	"strings"
 	"net/http/httptest"
 	"testing"
 
@@ -305,4 +306,60 @@ func TestProvider_Stream_GetsSSEAcceptHeader(t *testing.T) {
 	if s, _ := body["stream"].(bool); !s {
 		t.Errorf("upstream body lost stream=true: %s", captured.Body)
 	}
+}
+
+// TestProvider_OpenAIResponsesType pins the dedicated "OpenAI Responses"
+// channel type (channeltype.OpenAIResponses): /v1/responses passes through to
+// {base}/v1/responses with a Bearer key and zero conversion, while a chat
+// request is refused with 503 so the relay fails over to a chat channel —
+// protocol conversion between the two APIs has been removed.
+func TestProvider_OpenAIResponsesType(t *testing.T) {
+	r, mt := setupProviderStack(t, providerStackOptions{
+		channelType: channeltype.OpenAIResponses,
+		baseURL:     "https://resp.mock",
+		models:      "k3-test",
+	})
+	var captured *upstreamCapture
+	mt.Match(http.MethodPost, "https://resp.mock",
+		captureUpstream(t, &captured, http.StatusOK,
+			[]byte(`{"id":"resp_1","object":"response","status":"completed","output":[],"usage":{"input_tokens":5,"output_tokens":2}}`)))
+
+	t.Run("responses passthrough", func(t *testing.T) {
+		captured = nil
+		rec := doRelayRequestTo(t, r, "/v1/responses", "Bearer sk-test", "",
+			`{"model":"k3-test","input":"hi","stream":false}`)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+		}
+		if captured == nil {
+			t.Fatal("upstream not hit")
+		}
+		if got := captured.URL.Path; got != "/v1/responses" {
+			t.Errorf("upstream path = %q, want /v1/responses (verbatim passthrough)", got)
+		}
+		if auth := captured.Header.Get("Authorization"); auth != "Bearer upstream-key" {
+			t.Errorf("Authorization = %q, want Bearer upstream-key", auth)
+		}
+		if body := string(captured.Body); !strings.Contains(body, `"model":"k3-test"`) {
+			t.Errorf("upstream body lost the model: %s", body)
+		}
+		if obj := rec.Body.String(); !strings.Contains(obj, `"object":"response"`) {
+			t.Errorf("client body should be the untouched Responses payload: %s", obj)
+		}
+	})
+
+	t.Run("chat refused with 503", func(t *testing.T) {
+		captured = nil
+		rec := doRelayRequest(t, r, "Bearer sk-test", "",
+			basicChatBody(map[string]any{"model": "k3-test"}))
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("status = %d, want 503 (chat refused on a responses-only type); body=%s", rec.Code, rec.Body.String())
+		}
+		if captured != nil {
+			t.Error("upstream must not be hit by a refused chat request")
+		}
+		if !strings.Contains(rec.Body.String(), "chat_unsupported_on_channel") {
+			t.Errorf("error should carry chat_unsupported_on_channel: %s", rec.Body.String())
+		}
+	})
 }

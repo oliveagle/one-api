@@ -151,6 +151,9 @@ func setupProviderStack(t *testing.T, opts providerStackOptions) (*gin.Engine, *
 	grp := r.Group("/v1")
 	grp.Use(middleware.TokenAuth(), middleware.Distribute())
 	grp.POST("/chat/completions", Relay)
+	// The Responses API endpoint: needed by tests that drive the
+	// responses passthrough path (e.g. the OpenAIResponses channel type).
+	grp.POST("/responses", Relay)
 	return r, mt
 }
 

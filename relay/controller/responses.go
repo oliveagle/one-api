@@ -157,14 +157,17 @@ func RelayResponsesHelper(c *gin.Context) *relaymodel.ErrorWithStatusCode {
 
 // upstreamSupportsResponses reports whether the selected channel's upstream
 // natively implements the Responses API, in which case the request is passed
-// through untouched. Channels that do not (e.g. opencode-go) get an automatic
-// Responses -> Chat Completions conversion.
+// through untouched. Channels that do not are refused with 503 so the relay's
+// failover can walk the rest of the pool — protocol conversion between the
+// Responses and Chat Completions APIs has been removed (pools are split by
+// wire protocol instead, e.g. coding_resps / coding_chat).
 //
 // A channel opts in to passthrough via the `support_responses` channel config
-// flag. The AIHubMix channel type is additionally treated as native because
-// the passthrough path was originally verified against it (see
-// docs/adr/0001-openai-responses-api-passthrough.md); everything else defaults
-// to conversion.
+// flag (or `responses_only` for upstreams without a chat endpoint). The
+// OpenAIResponses channel type implies native Responses support, and the
+// AIHubMix channel type is additionally treated as native because the
+// passthrough path was originally verified against it (see
+// docs/adr/0001-openai-responses-api-passthrough.md).
 func upstreamSupportsResponses(meta *meta.Meta) bool {
 	if meta == nil {
 		return false
@@ -172,99 +175,15 @@ func upstreamSupportsResponses(meta *meta.Meta) bool {
 	if meta.Config.SupportResponses || meta.Config.ResponsesOnly {
 		return true
 	}
-	return meta.ChannelType == channeltype.AIHubMix
+	return meta.ChannelType == channeltype.AIHubMix || meta.ChannelType == channeltype.OpenAIResponses
 }
 
-// relayResponsesConvertToChat converts a Responses API request into a Chat
-// Completions request and delegates to the existing chat pipeline
-// (RelayTextHelper), which handles model mapping, billing, streaming and
-// response forwarding. The converted body is injected into the request context
-// so RelayTextHelper reads it as if the client had called /v1/chat/completions
-// directly.
-//
-// The response direction is converted back: the client spoke the
-// Responses protocol, so the chat pipeline's output (body or SSE
-// events) is wrapped by chatToResponsesWriter and re-emitted in
-// Responses format.
-//
-// The original request path and body are restored AFTER the chat
-// pipeline finishes, so the caller's retry/error handling sees the
-// untouched Responses request — but the pipeline itself must observe
-// the converted chat request for its whole run (restoring earlier
-// would make getAndValidateTextRequest re-read the raw Responses body
-// and leak it upstream).
-func relayResponsesConvertToChat(c *gin.Context, request *ResponsesRequest) *relaymodel.ErrorWithStatusCode {
-	restore, err := convertResponsesRequestToChat(c, request)
-	if err != nil {
-		return openai.ErrorWrapper(err, "responses_conversion_failed", http.StatusBadRequest)
-	}
-	origWriter := c.Writer
-	convertBack := newChatToResponsesWriter(origWriter, request.Stream, request.Model)
-	c.Writer = convertBack
-	bizErr := RelayTextHelper(c)
-	c.Writer = origWriter
-	convertBack.finish(bizErr != nil)
-	restore()
-	return bizErr
-}
-
-// convertResponsesRequestToChat converts a Responses API request into a Chat
-// Completions request body and rewrites the request context so RelayTextHelper
-// picks it up as a chat request. It returns a restore closure that puts the
-// original path and cached body back — the caller MUST invoke it after the
-// chat pipeline completes, not before.
-func convertResponsesRequestToChat(c *gin.Context, request *ResponsesRequest) (func(), error) {
-	ctx := c.Request.Context()
-
-	// Log the original Responses request shape before conversion.
-	logger.Debugf(ctx, "converting Responses request to Chat Completions: model=%q stream=%t instructions=%q input=%v",
-		request.Model, request.Stream, request.Instructions, request.Input)
-
-	converted, err := convertResponsesToChatCompletions(request)
-	if err != nil {
-		return nil, err
-	}
-
-	body, err := json.Marshal(converted)
-	if err != nil {
-		return nil, err
-	}
-	// Log the converted Chat Completions body at debug level.
-	logger.Debugf(ctx, "converted Chat Completions request: %s", string(body))
-	// The fast path in getRequestBody returns c.Request.Body verbatim
-	// without re-running the OpenAI adaptor's ConvertRequest. That fast
-	// path skips per-channel tool schema adaptations (e.g. opencode-go's
-	// flat tools shape), so the upstream would see the standard OpenAI
-	// shape and reject. We set the modified flag here so the slow path
-	// runs, producing the per-channel adjusted body.
-	c.Set(ctxkey.ConvertedFromResponses, "true")
-
-	// Remember the original body/path so they can be restored afterwards. The
-	// body was cached by UnmarshalBodyReusable when relayResponsesCreate parsed
-	// the request.
-	originalBody, _ := common.GetRequestBody(c)
-	originalPath := c.Request.URL.Path
-
-	// Inject the converted body and rewrite the path so RelayTextHelper derives
-	// the ChatCompletions relay mode (billing, validation and the adaptor all
-	// switch on it).
-	c.Set(ctxkey.KeyRequestBody, body)
-	c.Request.Body = io.NopCloser(bytes.NewBuffer(body))
-	c.Request.URL.Path = "/v1/chat/completions"
-	restore := func() {
-		c.Request.URL.Path = originalPath
-		c.Set(ctxkey.KeyRequestBody, originalBody)
-	}
-
-	return restore, nil
-}
-
-// relayResponsesCreate relays POST /v1/responses. When the selected channel's
-// upstream natively supports the Responses API the body is forwarded
+// relayResponsesCreate relays POST /v1/responses. The body is forwarded
 // byte-for-byte and the response is returned as-is; only `model` and `stream`
-// are inspected, for routing and billing. When the upstream does not support
-// the Responses API (e.g. an opencode-go channel), the request is converted to
-// a Chat Completions request and handled by the existing chat pipeline.
+// are inspected, for routing and billing. Channels whose upstream does not
+// natively serve the Responses API are refused with 503 so the relay's
+// failover can land the request on a responses-capable channel — protocol
+// conversion between the Responses and Chat Completions APIs no longer exists.
 func relayResponsesCreate(c *gin.Context) *relaymodel.ErrorWithStatusCode {
 	ctx := c.Request.Context()
 	meta := meta.GetByContext(c)
@@ -280,10 +199,15 @@ func relayResponsesCreate(c *gin.Context) *relaymodel.ErrorWithStatusCode {
 	// way /v1/chat/completions behaves, so no check is duplicated here.
 	meta.IsStream = request.Stream
 
-	// If the upstream does not natively implement the Responses API, convert the
-	// request to Chat Completions and delegate to the existing chat pipeline.
+	// No conversion: a Responses request may only be served by a channel whose
+	// upstream natively speaks the Responses API. 503 (not 400) so the relay's
+	// failover keeps walking the pool; if every channel for this model is
+	// chat-only the client sees this error and knows the model is chat-wire
+	// only.
 	if !upstreamSupportsResponses(meta) {
-		return relayResponsesConvertToChat(c, &request)
+		return openai.ErrorWrapper(fmt.Errorf(
+			"channel %q (model %q) does not support the Responses API; responses↔chat conversion has been removed — route this model through a responses-capable channel",
+			c.GetString(ctxkey.ChannelName), request.Model), "responses_unsupported_on_channel", http.StatusServiceUnavailable)
 	}
 
 	// Map the model name the same way the text path does, then rewrite it in the

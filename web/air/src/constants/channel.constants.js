@@ -37,6 +37,7 @@ export const CHANNEL_OPTIONS = [
   { key: 21, text: '知识库：AI Proxy', value: 21, color: 'purple' },
   {key: 20, text: 'OpenRouter', value: 20, color: 'black'},
   { key: 52, text: 'AIHubMix', value: 52, color: 'violet' },
+  { key: 59, text: 'OpenAI Responses', value: 59, color: 'teal' },
   { key: 2, text: '代理：API2D', value: 2, color: 'blue' },
   { key: 5, text: '代理：OpenAI-SB', value: 5, color: 'brown' },
   { key: 7, text: '代理：OhMyGPT', value: 7, color: 'purple' },
