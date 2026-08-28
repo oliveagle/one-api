@@ -64,9 +64,19 @@ const seedTokenKey = "test"
 type mockStackOptions struct {
 	// supportResponses seeds the channel with config.support_responses
 	// =true so POST /v1/responses is forwarded as native Responses
-	// passthrough. When false, /v1/responses requests are converted to
-	// Chat Completions by relayResponsesCreate.
+	// passthrough. When false, /v1/responses requests are refused with 503
+	// (protocol conversion was removed) and the relay's failover is expected
+	// to find a responses-capable channel or surface the error.
 	supportResponses bool
+	// responsesOnly seeds the channel with config.responses_only=true so
+	// POST /v1/chat/completions is refused with 503 by RelayTextHelper —
+	// chat requests may only land on chat-capable channels.
+	responsesOnly bool
+	// extraResponsesChannel seeds a SECOND mock channel (id 2) with
+	// support_responses=true serving the same model, so a stack whose
+	// primary channel is chat-only can still demonstrate failover onto a
+	// responses-capable channel.
+	extraResponsesChannel bool
 	// registerResponsesRoute adds POST /v1/responses to the gin engine
 	// in addition to /v1/chat/completions. Tests that hit the
 	// Responses endpoint must set this.
@@ -148,10 +158,15 @@ func setupMockRelayStackWithOptions(t *testing.T, opts mockStackOptions) *gin.En
 	channelCfg := ""
 	if opts.supportResponses {
 		// Opt the channel into native Responses passthrough so
-		// relayResponsesCreate forwards the body untouched instead of
-		// converting to Chat Completions. The third test category
-		// (responses->chat) leaves this false to exercise conversion.
+		// relayResponsesCreate forwards the body untouched. A channel
+		// without this flag refuses /v1/responses with 503 (protocol
+		// conversion was removed).
 		channelCfg = `{"support_responses":true}`
+	}
+	if opts.responsesOnly {
+		// responses_only upstreams have no chat endpoint: chat requests
+		// are refused with 503 so the relay fails over to a chat channel.
+		channelCfg = `{"responses_only":true}`
 	}
 	channel := &model.Channel{
 		Id:      1,
@@ -166,6 +181,24 @@ func setupMockRelayStackWithOptions(t *testing.T, opts mockStackOptions) *gin.En
 	}
 	if err := channel.Insert(); err != nil {
 		t.Fatalf("seed channel: %v", err)
+	}
+	if opts.extraResponsesChannel {
+		// A second, responses-capable channel serving the same model so
+		// failover tests can start on the chat-only channel and land here.
+		extra := &model.Channel{
+			Id:      2,
+			Type:    channeltype.Mock,
+			Name:    "mock-channel-responses",
+			Status:  model.ChannelStatusEnabled,
+			Group:   "default",
+			Models:  mockModelName,
+			BaseURL: &baseURL,
+			Key:     "not-used-by-mock",
+			Config:  `{"support_responses":true}`,
+		}
+		if err := extra.Insert(); err != nil {
+			t.Fatalf("seed responses channel: %v", err)
+		}
 	}
 
 	// 5. Populate the in-memory channel cache so Distribute can route.

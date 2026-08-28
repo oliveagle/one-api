@@ -7,6 +7,13 @@ export const CHANNEL_OPTIONS = [
     color: 'olive',
     description: 'OpenAI 兼容渠道，支持设置 Base URL',
   },
+  {
+    key: 59,
+    text: 'OpenAI Responses',
+    value: 59,
+    color: 'teal',
+    description: '上游原生支持 Responses API：/v1/responses 直通转发，chat 请求将被拒绝（协议间不做转换）',
+  },
   {key: 14, text: 'Anthropic', value: 14, color: 'black'},
   { key: 33, text: 'AWS', value: 33, color: 'black' },
   {key: 3, text: 'Azure', value: 3, color: 'olive'},

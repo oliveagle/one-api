@@ -227,6 +227,12 @@ export const CHANNEL_OPTIONS = {
     value: 52,
     color: 'success'
   },
+  59: {
+    key: 59,
+    text: 'OpenAI Responses',
+    value: 59,
+    color: 'success'
+  },
   2: {
     key: 2,
     text: '代理：API2D',

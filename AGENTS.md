@@ -16,7 +16,7 @@ categories before touching anything else.**
 |---|---|---|---|---|
 | **1. responses → responses** | Responses API | Responses API (native) | `support_responses: true` | `relay_mock_categories_test.go` |
 | **2. chat → chat** | Chat Completions | Chat Completions | (default) | `relay_mock_integration_test.go` |
-| **3. responses → chat** | Responses API | Chat Completions only | (no flag) | `relay_mock_categories_test.go` |
+| **3. responses on chat-only** | Responses API | Chat Completions only | (no flag) | `relay_mock_categories_test.go` |
 
 All three categories run against the **built-in mock channel**
 (`channeltype.Mock` / `apitype.Mock`), whose adaptor
@@ -24,7 +24,16 @@ All three categories run against the **built-in mock channel**
 in-process — no network. Behavior is selected per-request via the
 `X-Mock-Behavior` header.
 
-### The rule: pin 1 & 2, then improve 3
+### The rule: pin 1 & 2, keep 3 refusing
+
+Protocol conversion between the Responses and Chat Completions APIs has
+been REMOVED (2026-08): a Responses request that lands on a channel whose
+upstream does not natively serve the Responses API is refused with 503
+(`responses_unsupported_on_channel`) so the relay's failover walks the
+rest of the pool; symmetrically, a chat request landing on a
+`responses_only` channel (or an `OpenAIResponses`-type channel) is
+refused with 503 (`chat_unsupported_on_channel`). Pools are split by
+wire protocol instead (e.g. coding_resps / coding_chat).
 
 When you add or change how a provider behaves:
 
@@ -32,13 +41,9 @@ When you add or change how a provider behaves:
    *native* response shape (add a new `X-Mock-Behavior` value + a test
    that asserts on the exact shape the provider returns). These are the
    ground truth — they capture what real upstreams actually emit.
-2. **Then, improve Category 3** (the responses→chat conversion) so the
-   converted output matches what a Responses-API client expects, validated
-   against the shapes pinned in step 1.
-
-Doing it in the other order (changing the conversion without first
-pinning the native shapes) is how the conversion path drifts away from
-reality and silently breaks coding agents.
+2. **Keep Category 3 pinning the refusal + failover semantics** — never
+   resurrect conversion; if a model must serve both wires, give it both
+   pool names.
 
 ### How the mock channel works
 
@@ -56,29 +61,24 @@ reality and silently breaks coding agents.
   SQLite, enables the in-memory channel cache, and wires the real
   `TokenAuth → Distribute → controller.Relay` chain.
 
-### Where the conversion lives
+### Where the Responses passthrough lives
 
-- `relay/controller/responses.go` — `relayResponsesCreate` branches on
-  `upstreamSupportsResponses(meta)`: if true, passthrough; if false,
-  convert via `relayResponsesConvertToChat` → `RelayTextHelper`.
-- `relay/controller/responses_convert.go` — the request-direction
-  conversion core (`convertResponsesToChatCompletions`, input→messages
-  mapping). Unit tests in `responses_convert_test.go`.
-- `relay/controller/responses_convert_back.go` — the response-direction
-  conversion: `chatToResponsesWriter` wraps the gin writer around
-  `RelayTextHelper` so the chat pipeline's Chat Completions output
-  (body or SSE events, including tool_calls) comes back to the client
-  in Responses format. Non-stream converts the whole body; stream
-  translates chat chunks into the Responses event vocabulary
-  (response.created / output_item.added / output_text.delta /
-  output_item.done / response.completed). Closing events are deferred
-  to `[DONE]` so the trailing include_usage chunk is captured.
-  NOTE: `convertResponsesRequestToChat` returns a restore closure the
-  caller MUST invoke only AFTER `RelayTextHelper` returns — restoring
-  earlier leaks the raw Responses body upstream.
-- `model.ChannelConfig.SupportResponses` — the per-channel opt-in flag.
-- `common/ctxkey.ConvertedFromResponses` — marks converted requests so
-  the chat pipeline forces the slow (per-channel adaptor) body path.
+- `relay/controller/responses.go` — `relayResponsesCreate` forwards the
+  body byte-for-byte when `upstreamSupportsResponses(meta)` is true;
+  otherwise it refuses with 503 `responses_unsupported_on_channel`
+  (retryable, so failover reaches a capable channel). There is NO
+  conversion layer anymore — `responses_convert*.go` were deleted.
+- `upstreamSupportsResponses` returns true for
+  `config.support_responses`, `config.responses_only`, the
+  `OpenAIResponses` channel type (new: upstream serves the Responses
+  API natively; chat requests to it are refused with 503
+  `chat_unsupported_on_channel` by `RelayTextHelper`), and AIHubMix
+  (see docs/adr/0001-openai-responses-api-passthrough.md).
+- `relay/controller/text.go` — `RelayTextHelper` refuses chat requests
+  on `responses_only`/`OpenAIResponses` channels with 503 so failover
+  reaches a chat channel.
+- `model.ChannelConfig.SupportResponses` / `.ResponsesOnly` — the
+  per-channel flags.
 
 ## Test infrastructure notes
 

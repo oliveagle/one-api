@@ -22,17 +22,19 @@ package controller
 //     Completions. This is the legacy/compat path. These tests live in
 //     relay_mock_integration_test.go (TestRelayMock_*).
 //
-//   Category 3 — responses -> chat (conversion)
-//     Client speaks Responses; the upstream only speaks Chat Completions
-//     (support_responses NOT set). relayResponsesCreate converts the
-//     Responses request into a Chat Completions request and delegates to
-//     RelayTextHelper. This is the transition path that lets agents
-//     adopt the Responses API today even when channels haven't upgraded.
+//   Category 3 — responses request on a chat-only channel (REFUSED)
+//     Client speaks Responses; the channel's upstream only speaks Chat
+//     Completions (support_responses NOT set). Protocol conversion has
+//     been REMOVED: the relay refuses with 503 (retryable) so failover
+//     can reach a responses-capable channel; symmetrically, a chat
+//     request landing on a responses_only channel is refused so failover
+//     reaches a chat channel. Pools are split by wire protocol
+//     (e.g. coding_resps / coding_chat) instead of converting.
 //
 // DEVELOPMENT MODE (see AGENTS.md):
 // When changing channel/provider behavior, extend categories 1 and 2
-// FIRST to pin the provider's native shapes, then improve category 3
-// (the conversion) against those pinned shapes. This stops the
+// FIRST to pin the provider's native shapes. Category 3 pins the
+// refusal + failover semantics. This stops the
 // conversion path from drifting away from what real providers return.
 
 import (
@@ -41,7 +43,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/songquanpeng/one-api/model"
+	"github.com/songquanpeng/one-api/common/config"
 )
 
 // basicResponsesBody returns a minimal Responses API request body for
@@ -137,180 +139,96 @@ func TestCategory1_ResponsesToResponses_Stream(t *testing.T) {
 }
 
 // ===========================================================================
-// Category 3 — responses -> chat (conversion)
+// Category 3 — responses request on a chat-only channel
 //
-// The channel does NOT set support_responses, so relayResponsesCreate
-// converts the Responses request to Chat Completions and delegates to
-// RelayTextHelper. The mock adaptor synthesizes a Chat Completions
-// response (default openai-chat behavior). The chat pipeline's output
-// is then converted BACK into Responses format by
-// chatToResponsesWriter, so the client always sees Responses shape on
-// /v1/responses regardless of which path served it.
+// Protocol conversion between the Responses and Chat Completions APIs has
+// been REMOVED: a /v1/responses request that lands on a channel whose
+// upstream does not natively serve the Responses API is refused with 503
+// (a retryable status) so the relay's failover can walk the rest of the
+// pool; when every channel for the model is chat-only the client sees the
+// 503. The chat direction is symmetric: a chat request landing on a
+// responses_only channel is likewise refused so failover reaches a chat
+// channel.
 // ===========================================================================
 
-func TestCategory3_ResponsesToChat_NonStream(t *testing.T) {
+func TestCategory3_ResponsesOnChatOnlyChannel_Refused(t *testing.T) {
 	r := setupMockRelayStackWithOptions(t, mockStackOptions{
-		// supportResponses deliberately FALSE → conversion kicks in.
-		registerResponsesRoute: true,
+		registerResponsesRoute: true, // supportResponses deliberately FALSE
 	})
-	// No X-Mock-Behavior: the conversion routes through RelayTextHelper
-	// which hits the mock's default openai-chat behavior.
 	rec := doRelayRequestTo(t, r, "/v1/responses",
-		"Bearer sk-test", "", basicResponsesBody())
+		"Bearer sk-test", "openai-responses", basicResponsesBody())
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503 (no conversion; single chat-only channel); body=%s", rec.Code, rec.Body.String())
 	}
 	var resp map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("response not JSON: %v\n%s", err, rec.Body.String())
 	}
-	// The client spoke the Responses protocol, so the converted reply
-	// must come back in Responses shape — the chat pipeline's output is
-	// converted back by chatToResponsesWriter.
-	if obj, _ := resp["object"].(string); obj != "response" {
-		t.Errorf("object = %q, want \"response\" (converted back from chat)", obj)
+	errObj, _ := resp["error"].(map[string]any)
+	msg, _ := errObj["message"].(string)
+	if !strings.Contains(msg, "does not support the Responses API") {
+		t.Errorf("error.message = %q, want it to name the unsupported channel", msg)
 	}
-	output, _ := resp["output"].([]any)
-	if len(output) == 0 {
-		t.Fatalf("expected non-empty output[] (Responses shape), got %v", resp["output"])
-	}
-	msg, _ := output[0].(map[string]any)
-	if ty, _ := msg["type"].(string); ty != "message" {
-		t.Errorf("output[0].type = %q, want message", ty)
-	}
-	content, _ := msg["content"].([]any)
-	if len(content) == 0 {
-		t.Fatalf("output[0].content empty: %v", msg["content"])
-	}
-	part, _ := content[0].(map[string]any)
-	if ty, _ := part["type"].(string); ty != "output_text" {
-		t.Errorf("content[0].type = %q, want output_text", ty)
-	}
-	if txt, _ := part["text"].(string); txt == "" {
-		t.Errorf("content[0].text empty — mock reply text lost in conversion")
-	}
-	// Responses usage field names.
-	usage, _ := resp["usage"].(map[string]any)
-	if it, _ := usage["input_tokens"].(float64); it == 0 {
-		t.Errorf("usage.input_tokens = %v, want > 0 (mapped from prompt_tokens)", usage["input_tokens"])
+	if code, _ := errObj["code"].(string); code != "responses_unsupported_on_channel" {
+		t.Errorf("error.code = %q, want responses_unsupported_on_channel", code)
 	}
 }
 
-func TestCategory3_ResponsesToChat_Stream(t *testing.T) {
+// TestCategory3_FailoverReachesResponsesCapableChannel pins the 503-driven
+// failover: with one chat-only and one responses-capable channel serving the
+// same model, a Responses request must end in 200 regardless of which channel
+// the random pick starts on.
+func TestCategory3_FailoverReachesResponsesCapableChannel(t *testing.T) {
+	// Give the relay budget to retry past the chat-only channel.
+	prevRetry := config.RetryTimes
+	config.RetryTimes = 3
+	t.Cleanup(func() { config.RetryTimes = prevRetry })
 	r := setupMockRelayStackWithOptions(t, mockStackOptions{
-		registerResponsesRoute: true, // supportResponses=false → convert
+		registerResponsesRoute: true,
+		extraResponsesChannel:  true,
 	})
-	body := basicResponsesBody(map[string]any{"stream": true})
 	rec := doRelayRequestTo(t, r, "/v1/responses",
-		"Bearer sk-test", "", body)
-
+		"Bearer sk-test", "openai-responses", basicResponsesBody())
 	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
-	}
-	out := rec.Body.String()
-	// The chat SSE stream must be translated into the Responses event
-	// vocabulary so Responses clients (codex et al.) can parse it.
-	for _, want := range []string{
-		"event: response.created",
-		"event: response.output_item.added",
-		"event: response.output_text.delta",
-		"event: response.output_text.done",
-		"event: response.output_item.done",
-		"event: response.completed",
-		"data: [DONE]",
-	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("converted stream missing %q:\n%s", want, out)
-		}
-	}
-	// The completed event carries the usage block mapped from chat
-	// prompt/completion tokens.
-	if !strings.Contains(out, "\"input_tokens\"") {
-		t.Errorf("response.completed missing Responses-style usage (input_tokens):\n%s", out)
-	}
-}
-
-// TestCategory3_ResponsesToChat_ToolCallRoundTrip pins the tool-call
-// conversion path: a Responses request carrying tools goes upstream as
-// a Chat Completions tools array, the chat tool_calls reply comes back
-// as a Responses function_call output item (what codex-style clients
-// act on).
-func TestCategory3_ResponsesToChat_ToolCallRoundTrip(t *testing.T) {
-	r := setupMockRelayStackWithOptions(t, mockStackOptions{
-		registerResponsesRoute: true, // supportResponses=false → convert
-	})
-	body := basicResponsesBody(map[string]any{
-		"tools": []map[string]any{{
-			"type": "function",
-			"function": map[string]any{
-				"name":        "get_weather",
-				"description": "Get weather",
-				"parameters":  map[string]any{"type": "object", "properties": map[string]any{}},
-			},
-		}},
-	})
-	rec := doRelayRequestTo(t, r, "/v1/responses", "Bearer sk-test", "openai-tool-call", body)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+		t.Fatalf("status = %d, want 200 after failover onto the responses-capable channel; body=%s", rec.Code, rec.Body.String())
 	}
 	var resp map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("response not JSON: %v\n%s", err, rec.Body.String())
+		t.Fatalf("response not JSON: %v", err)
 	}
 	if obj, _ := resp["object"].(string); obj != "response" {
-		t.Fatalf("object = %q, want response", obj)
-	}
-	output, _ := resp["output"].([]any)
-	if len(output) == 0 {
-		t.Fatalf("output empty: %v", resp["output"])
-	}
-	call, _ := output[0].(map[string]any)
-	if ty, _ := call["type"].(string); ty != "function_call" {
-		t.Fatalf("output[0].type = %q, want function_call (chat tool_calls converted back)", ty)
-	}
-	if name, _ := call["name"].(string); name != "get_weather" {
-		t.Errorf("function_call.name = %q, want get_weather", name)
-	}
-	if callID, _ := call["call_id"].(string); callID == "" {
-		t.Errorf("function_call.call_id empty — clients need it to send the tool output back")
-	}
-	var args map[string]any
-	if err := json.Unmarshal([]byte(call["arguments"].(string)), &args); err != nil {
-		t.Errorf("function_call.arguments not valid JSON: %v", call["arguments"])
+		t.Errorf("object = %q, want response (native passthrough shape)", obj)
 	}
 }
 
-func TestCategory3_ResponsesToChat_QuotaAccounting(t *testing.T) {
-	// The conversion path bills through RelayTextHelper, so quota must
-	// settle on User.UsedQuota exactly like a native chat request. This
-	// guards that conversion doesn't accidentally skip billing.
+// TestCategory3_ChatOnResponsesOnlyChannel_Refused pins the symmetric guard
+// in RelayTextHelper: chat-completions requests may only be served by
+// chat-capable channels.
+func TestCategory3_ChatOnResponsesOnlyChannel_Refused(t *testing.T) {
 	r := setupMockRelayStackWithOptions(t, mockStackOptions{
-		registerResponsesRoute: true,
+		responsesOnly: true,
 	})
-	rec := doRelayRequestTo(t, r, "/v1/responses",
-		"Bearer sk-test", "", basicResponsesBody())
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	rec := doRelayRequest(t, r, "Bearer sk-test", "openai-chat",
+		`{"model":"`+mockModelName+`","messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503 (chat refused on responses-only channel); body=%s", rec.Code, rec.Body.String())
 	}
-	model.BatchUpdate()
-	var user model.User
-	if err := model.DB.First(&user, 1).Error; err != nil {
-		t.Fatalf("load user: %v", err)
-	}
-	if user.UsedQuota <= 0 {
-		t.Errorf("User.UsedQuota = %d, want > 0 (conversion must bill)", user.UsedQuota)
+	var resp map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	errObj, _ := resp["error"].(map[string]any)
+	if code, _ := errObj["code"].(string); code != "chat_unsupported_on_channel" {
+		t.Errorf("error.code = %q, want chat_unsupported_on_channel", code)
 	}
 }
 
 // ===========================================================================
 // Cross-category sanity: the SAME channel flips between passthrough and
-// conversion based solely on support_responses. This pins the routing
-// decision so a config regression can't silently swap the path.
+// refusal based solely on support_responses. This pins the routing decision
+// so a config regression can't silently resurrect conversion.
 // ===========================================================================
 
-func TestCategoryRouting_FlagControlsPassthroughVsConversion(t *testing.T) {
+func TestCategoryRouting_FlagControlsPassthroughVsRefusal(t *testing.T) {
 	t.Run("support_responses_true_returns_responses_shape", func(t *testing.T) {
 		r := setupMockRelayStackWithOptions(t, mockStackOptions{
 			supportResponses:       true,
@@ -327,19 +245,14 @@ func TestCategoryRouting_FlagControlsPassthroughVsConversion(t *testing.T) {
 			t.Errorf("support_responses=true should passthrough Responses shape, got object=%v", resp["object"])
 		}
 	})
-	t.Run("support_responses_false_converts_to_chat", func(t *testing.T) {
+	t.Run("support_responses_false_refused_with_503", func(t *testing.T) {
 		r := setupMockRelayStackWithOptions(t, mockStackOptions{
 			registerResponsesRoute: true,
 		})
 		rec := doRelayRequestTo(t, r, "/v1/responses",
-			"Bearer sk-test", "", basicResponsesBody())
-		if rec.Code != http.StatusOK {
-			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
-		}
-		var resp map[string]any
-		_ = json.Unmarshal(rec.Body.Bytes(), &resp)
-		if resp["object"] != "response" {
-			t.Errorf("support_responses=false converts to chat upstream but must reply in Responses shape, got object=%v", resp["object"])
+			"Bearer sk-test", "openai-responses", basicResponsesBody())
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("status=%d body=%s — conversion is gone; a chat-only channel must refuse", rec.Code, rec.Body.String())
 		}
 	})
 }

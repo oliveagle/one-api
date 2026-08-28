@@ -22,13 +22,6 @@ const (
 	KeyRequestBody    = "key_request_body"
 	SystemPrompt      = "system_prompt"
 	Headers           = "headers"
-	SessionKey        = "session_key"
-	SessionSource     = "session_source"
-	// ConvertedFromResponses marks requests that the Responses -> Chat
-	// conversion produced. The relay pipeline uses this to force the
-	// request body to flow through the OpenAI adaptor's ConvertRequest
-	// (which applies per-channel tool schema adaptations like the
-	// opencode-go flat tools shape) instead of taking the fast path that
-	// would return the raw body verbatim.
-	ConvertedFromResponses = "converted_from_responses"
+	SessionKey             = "session_key"
+	SessionSource          = "session_source"
 )

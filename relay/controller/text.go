@@ -35,6 +35,16 @@ var PostConsumeQuotaSynchronous bool
 func RelayTextHelper(c *gin.Context) *model.ErrorWithStatusCode {
 	ctx := c.Request.Context()
 	meta := meta.GetByContext(c)
+	// No conversion: a chat-completions request may only be served by a
+	// channel whose upstream speaks chat. Channels marked responses_only (or
+	// of the OpenAIResponses type) are refused with 503 so the relay's
+	// failover can land on a chat channel; if every channel for this model
+	// is responses-only the client sees this error.
+	if meta.Config.ResponsesOnly || meta.ChannelType == channeltype.OpenAIResponses {
+		return openai.ErrorWrapper(fmt.Errorf(
+			"channel %q (model %q) only serves the Responses API; responses↔chat conversion has been removed — route this model through a chat channel",
+			c.GetString(ctxkey.ChannelName), meta.OriginModelName), "chat_unsupported_on_channel", http.StatusServiceUnavailable)
+	}
 	// get & validate textRequest
 	textRequest, requestModified, err := getAndValidateTextRequest(c, meta.Mode)
 	if err != nil {
