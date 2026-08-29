@@ -26,6 +26,10 @@ func getRequestModel(c *gin.Context) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("common.UnmarshalBodyReusable failed: %w", err)
 	}
+	// Model names never legitimately carry surrounding whitespace; some
+	// clients (codex 0.150 -m flag quirks) emit a leading space, which would
+	// silently break channel-name addressing and pool lookups.
+	modelRequest.Model = strings.TrimSpace(modelRequest.Model)
 	if strings.HasPrefix(c.Request.URL.Path, "/v1/moderations") {
 		if modelRequest.Model == "" {
 			modelRequest.Model = "text-moderation-stable"

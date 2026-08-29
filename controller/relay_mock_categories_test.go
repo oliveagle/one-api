@@ -383,3 +383,16 @@ func TestChannelAddressing_DefaultModelMayBeUpstreamName(t *testing.T) {
 		t.Errorf("upstream model = %q, want raw-upstream-model", m)
 	}
 }
+
+func TestChannelAddressing_TrimsSurroundingWhitespace(t *testing.T) {
+	// codex 0.150's -m flag can emit a leading space; the relay trims the
+	// model name so addressing and pool lookups are immune.
+	r := setupMockRelayStackWithOptions(t, mockStackOptions{
+		defaultModel: mockModelName,
+	})
+	rec := doRelayRequest(t, r, "Bearer sk-test", "openai-chat",
+		`{"model":" mock-channel ","messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (trimmed to mock-channel); body=%s", rec.Code, rec.Body.String())
+	}
+}
