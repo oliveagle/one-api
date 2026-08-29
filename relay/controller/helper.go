@@ -34,6 +34,9 @@ func getAndValidateTextRequest(c *gin.Context, relayMode int) (*relaymodel.Gener
 	if err != nil {
 		return nil, false, err
 	}
+	// Mirror middleware.getRequestModel's trim (clients emitting a leading
+	// space would otherwise miss model_mapping and route upstream raw).
+	textRequest.Model = strings.TrimSpace(textRequest.Model)
 	if relayMode == relaymode.Moderations && textRequest.Model == "" {
 		textRequest.Model = "text-moderation-latest"
 	}

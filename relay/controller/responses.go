@@ -192,6 +192,10 @@ func relayResponsesCreate(c *gin.Context) *relaymodel.ErrorWithStatusCode {
 	if err := common.UnmarshalBodyReusable(c, &request); err != nil {
 		return openai.ErrorWrapper(err, "invalid_responses_request", http.StatusBadRequest)
 	}
+	// Mirror middleware.getRequestModel's trim: the body's model must match
+	// what routing selected (some clients emit a leading space), so mapping
+	// lookups and the forwarded model are consistent.
+	request.Model = strings.TrimSpace(request.Model)
 	// `model` is optional in the Responses spec (only Authorization is required),
 	// but one-api needs it to pick a channel: CacheGetRandomSatisfiedChannel keys
 	// on group+model. Requests without it are already rejected upstream of this
