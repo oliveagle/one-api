@@ -100,6 +100,11 @@ var PreConsumedQuota int64 = 500
 var ApproximateTokenEnabled = false
 var RetryTimes = 0
 
+// LogRetentionDays caps how long request/consume logs are kept; the retention
+// loop deletes older rows once at startup and then daily. 0 disables cleanup
+// (logs grow unboundedly, as they did before this knob existed).
+var LogRetentionDays = env.Int("LOG_RETENTION_DAYS", 30)
+
 var RootUserEmail = ""
 
 var IsMasterNode = os.Getenv("NODE_TYPE") != "slave"
