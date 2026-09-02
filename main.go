@@ -17,13 +17,12 @@ import (
 	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/i18n"
 	"github.com/songquanpeng/one-api/common/logger"
-	"github.com/songquanpeng/one-api/common/observability"
 	"github.com/songquanpeng/one-api/controller"
 	"github.com/songquanpeng/one-api/middleware"
 	"github.com/songquanpeng/one-api/model"
+	"github.com/songquanpeng/one-api/common/observability"
 	"github.com/songquanpeng/one-api/relay/adaptor/openai"
 	"github.com/songquanpeng/one-api/router"
-	"github.com/songquanpeng/one-api/store/rqlite"
 )
 
 //go:embed web/build/*
@@ -35,24 +34,6 @@ func main() {
 	defer observability.Shutdown()
 	logger.SetupLogger()
 	logger.SysLogf("One API %s started", common.Version)
-
-	// RQLite embedded store: start it before the logger so all store
-	// activity is captured in the log file. (ADR-0004 D6)
-	if os.Getenv("RQLITE_DIR") != "" {
-		es, err := rqlite.StartEmbedded(os.Getenv("RQLITE_DIR"), os.Getenv("RQLITE_NODE_ID"))
-		if err != nil {
-			logger.FatalLog("rqlite: " + err.Error())
-			return
-		}
-		// Guarantee a full snapshot exists so a future restart (with a
-		// new ephemeral raft port) can recover via peers.json.
-		es.EnsureFullSnapshotMarker()
-		defer func() {
-			es.EnsureFullSnapshotMarker()
-			_ = es.Close()
-		}()
-		logger.SysLogf("RQLite embedded store ready (dir %s, db %s)", es.DataDir(), es.DBPath())
-	}
 
 	if os.Getenv("GIN_MODE") != gin.DebugMode {
 		gin.SetMode(gin.ReleaseMode)
