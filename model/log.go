@@ -3,6 +3,7 @@ package model
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"gorm.io/gorm"
 
@@ -229,7 +230,7 @@ func SearchLogsByDayAndModel(userId, start, end int) (LogStatistics []*LogStatis
 		groupSelect = "TO_CHAR(date_trunc('day', to_timestamp(created_at)), 'YYYY-MM-DD') as day"
 	}
 
-	if common.UsingSQLite {
+	if common.UsingSQLite || common.UsingRQLite {
 		groupSelect = "strftime('%Y-%m-%d', datetime(created_at, 'unixepoch')) as day"
 	}
 
@@ -248,4 +249,55 @@ func SearchLogsByDayAndModel(userId, start, end int) (LogStatistics []*LogStatis
 	`, userId, start, end).Scan(&LogStatistics).Error
 
 	return LogStatistics, err
+}
+
+// logRetentionBatch keeps each DELETE statement small so housekeeping never
+// holds the SQLite write lock for a full-table pass (the logs table reaches
+// hundreds of thousands of rows in production).
+const logRetentionBatch = 10000
+
+// deleteExpiredLogs removes every log older than config.LogRetentionDays in
+// bounded batches. Returns the total number of rows removed.
+func deleteExpiredLogs(now time.Time) int64 {
+	threshold := now.Add(-time.Duration(config.LogRetentionDays) * 24 * time.Hour).Unix()
+	var total int64
+	for {
+		res := LOG_DB.Exec(
+			"DELETE FROM logs WHERE id IN (SELECT id FROM logs WHERE created_at < ? LIMIT ?)",
+			threshold, logRetentionBatch,
+		)
+		if res.Error != nil {
+			logger.SysError(fmt.Sprintf("log retention delete failed: %s", res.Error.Error()))
+			break
+		}
+		total += res.RowsAffected
+		if res.RowsAffected < logRetentionBatch {
+			break
+		}
+	}
+	if total > 0 {
+		logger.SysLog(fmt.Sprintf("log retention: deleted %d rows older than %d days", total, config.LogRetentionDays))
+	}
+	return total
+}
+
+// StartLogRetentionLoop deletes request/consume logs older than
+// config.LogRetentionDays once at startup and then daily. quota is settled
+// on User.UsedQuota at request time, so removing old logs never distorts
+// billing — they are pure history. config.LogRetentionDays <= 0 disables the
+// loop entirely (the pre-retention behavior). The interval is read per tick,
+// so an options-table change applies without a restart.
+func StartLogRetentionLoop() {
+	if config.LogRetentionDays <= 0 {
+		return
+	}
+	deleteExpiredLogs(time.Now())
+	ticker := time.NewTicker(24 * time.Hour)
+	defer ticker.Stop()
+	for range ticker.C {
+		if config.LogRetentionDays <= 0 {
+			continue
+		}
+		deleteExpiredLogs(time.Now())
+	}
 }

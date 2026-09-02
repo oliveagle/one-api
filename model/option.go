@@ -74,6 +74,7 @@ func InitOptionMap() {
 	config.OptionMap["ChatLink"] = config.ChatLink
 	config.OptionMap["QuotaPerUnit"] = strconv.FormatFloat(config.QuotaPerUnit, 'f', -1, 64)
 	config.OptionMap["RetryTimes"] = strconv.Itoa(config.RetryTimes)
+	config.OptionMap["LogRetentionDays"] = strconv.Itoa(config.LogRetentionDays)
 	config.OptionMap["Theme"] = config.Theme
 	config.OptionMapRWMutex.Unlock()
 	loadOptionsFromDatabase()
@@ -223,6 +224,10 @@ func updateOptionMap(key string, value string) (err error) {
 		config.PreConsumedQuota, _ = strconv.ParseInt(value, 10, 64)
 	case "RetryTimes":
 		config.RetryTimes, _ = strconv.Atoi(value)
+	case "LogRetentionDays":
+		if days, err := strconv.Atoi(value); err == nil && days >= 0 {
+			config.LogRetentionDays = days
+		}
 	case "ModelRatio":
 		err = billingratio.UpdateModelRatioByJSONString(value)
 	case "GroupRatio":

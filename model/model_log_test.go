@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/songquanpeng/one-api/common/config"
 )
 
 func TestLogCRUD(t *testing.T) {
@@ -147,5 +149,34 @@ func TestSearchRedemptions(t *testing.T) {
 	}
 	if len(redemptions) == 0 {
 		t.Fatal("expected at least one redemption")
+	}
+}
+
+func TestDeleteExpiredLogs(t *testing.T) {
+	setupMockDB(t)
+	prev := config.LogRetentionDays
+	defer func() { config.LogRetentionDays = prev }()
+	config.LogRetentionDays = 7
+
+	now := time.Now()
+	oldTs := now.Add(-8 * 24 * time.Hour).Unix()
+	edgeTs := now.Add(-6 * 24 * time.Hour).Unix()
+	for i := 0; i < logRetentionBatch+50; i++ {
+		if err := DB.Create(&Log{CreatedAt: oldTs, Type: LogTypeConsume, Content: "old"}).Error; err != nil {
+			t.Fatalf("seed old log: %v", err)
+		}
+	}
+	if err := DB.Create(&Log{CreatedAt: edgeTs, Type: LogTypeConsume, Content: "keep"}).Error; err != nil {
+		t.Fatalf("seed recent log: %v", err)
+	}
+
+	deleted := deleteExpiredLogs(now)
+	if deleted != logRetentionBatch+50 {
+		t.Fatalf("deleted %d rows, want %d", deleted, logRetentionBatch+50)
+	}
+	var remaining int64
+	DB.Model(&Log{}).Count(&remaining)
+	if remaining != 1 {
+		t.Fatalf("remaining logs = %d, want 1 (the sub-threshold row)", remaining)
 	}
 }
