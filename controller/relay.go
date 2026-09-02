@@ -92,8 +92,10 @@ func Relay(c *gin.Context) {
 	// retryTimes > 0 meant that with RetryTimes=0 a sticky session stayed pinned
 	// to a node known to be broken (e.g. an upstream whose monthly quota is
 	// exhausted) and kept hitting it, with the router none the wiser.
-	if retryable {
+	if retryable && !wireMismatch(bizErr) {
 		router.Fail(group, originalModel, sessionKey, lastFailedChannelId)
+	}
+	if retryable {
 		markChannelPenalty(lastFailedChannelId, bizErr)
 	}
 
@@ -130,7 +132,9 @@ func Relay(c *gin.Context) {
 		// errors that indicate a node problem. A non-retryable error (e.g. a
 		// client 400) is not the node's fault, so stop retrying.
 		if shouldRetry(c, bizErr.StatusCode) {
-			router.Fail(group, originalModel, sessionKey, channelId)
+			if !wireMismatch(bizErr) {
+				router.Fail(group, originalModel, sessionKey, channelId)
+			}
 			markChannelPenalty(channelId, bizErr)
 			go processChannelRelayError(ctx, userId, channelId, channelName, *bizErr)
 		} else {
@@ -223,6 +227,19 @@ func RelayNotFound(c *gin.Context) {
 	})
 }
 
+// wireMismatch reports whether err is a protocol-mismatch refusal
+// (responses request on a chat-only channel, or the reverse). These 503s are
+// the POOL's fault (mixed wire protocols), not the channel's: the channel
+// must not be sticky-cooled for them — with homogeneous pools they never
+// fire, and with mixed pools they would unfairly sideline healthy channels.
+func wireMismatch(err *model.ErrorWithStatusCode) bool {
+	if err == nil {
+		return false
+	}
+	return err.Error.Code == "responses_unsupported_on_channel" ||
+		err.Error.Code == "chat_unsupported_on_channel"
+}
+
 // ---------------------------------------------------------------------------
 // 429 routing penalties
 // ---------------------------------------------------------------------------
@@ -274,7 +291,14 @@ func markChannelPenalty(channelId int, err *model.ErrorWithStatusCode) {
 			until = time.Now().Add(quotaCooldownMax)
 		}
 	} else {
-		until = time.Now().Add(rateLimitCooldown)
+		cooldown := rateLimitCooldown
+		if ms := err.Error.RetryAfterMs; ms > 0 {
+			cooldown = time.Duration(ms) * time.Millisecond
+			if cooldown > quotaCooldownMax {
+				cooldown = quotaCooldownMax
+			}
+		}
+		until = time.Now().Add(cooldown)
 	}
 	penaltyMu.Lock()
 	defer penaltyMu.Unlock()

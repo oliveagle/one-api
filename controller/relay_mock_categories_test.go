@@ -46,6 +46,7 @@ import (
 	"github.com/songquanpeng/one-api/common/config"
 	dbmodel "github.com/songquanpeng/one-api/model"
 	relaymodel "github.com/songquanpeng/one-api/relay/model"
+	"github.com/songquanpeng/one-api/relay/routing"
 )
 
 // basicResponsesBody returns a minimal Responses API request body for
@@ -478,5 +479,44 @@ func TestRelay429Penalty_CooldownMarkedAndFallbackServes(t *testing.T) {
 		basicChatBody(map[string]any{"model": mockModelName}))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("follow-up request must fall back to the cooling channel; status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestWireMismatchDoesNotStickyCool pins fairness: a protocol-mismatch 503
+// (responses request landing on a chat-only channel) must retry through the
+// pool but must NOT put the channel into sticky cooldown — the channel is
+// healthy, the pool composition is at fault.
+func TestWireMismatchDoesNotStickyCool(t *testing.T) {
+	// Budget for the failover walk past the chat-only channel.
+	prevRetry := config.RetryTimes
+	config.RetryTimes = 3
+	t.Cleanup(func() { config.RetryTimes = prevRetry })
+	// The sticky router is process-global: earlier tests may have left
+	// sticky cooldowns on both channels, which would force the fresh
+	// binding onto the chat-only channel with no failover path.
+	for _, st := range routing.DefaultRouter().Store().ChannelStates() {
+		routing.DefaultRouter().Store().ClearCooldown(st.ChannelId)
+	}
+	r := setupMockRelayStackWithOptions(t, mockStackOptions{
+		registerResponsesRoute: true,
+		extraResponsesChannel:  true,
+	})
+	rec := doRelayRequestTo(t, r, "/v1/responses", "Bearer sk-test", "openai-responses",
+		basicResponsesBody())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 after failover; body=%s", rec.Code, rec.Body.String())
+	}
+	// Whatever channel refused must not be in sticky cooldown afterwards:
+	// both channels stay selectable for a subsequent chat request.
+	rec = doRelayRequest(t, r, "Bearer sk-test", "openai-chat",
+		basicChatBody(map[string]any{"model": mockModelName}))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("follow-up chat request failed: %d %s", rec.Code, rec.Body.String())
+	}
+	store := routing.DefaultRouter().Store()
+	for _, st := range store.ChannelStates() {
+		if !st.CoolingUntil.IsZero() {
+			t.Fatalf("channel %d left in sticky cooldown by a wire-mismatch refusal", st.ChannelId)
+		}
 	}
 }

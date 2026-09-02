@@ -8,6 +8,8 @@ import (
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
+	"path/filepath"
+	"strings"
 )
 
 // setupMockDB wires a fresh SQLite DB into the package-level model.DB.
@@ -400,5 +402,30 @@ func TestChannelGetHeaders_RoundTrip(t *testing.T) {
 	}
 	if parsed["User-Agent"] != "opencode" {
 		t.Errorf("User-Agent = %q, want opencode", parsed["User-Agent"])
+	}
+}
+
+func TestSQLiteOpensInWALMode(t *testing.T) {
+	dir := t.TempDir()
+	common.SQLitePath = filepath.Join(dir, "wal-check.db")
+	prevPath := common.SQLitePath
+	defer func() { common.SQLitePath = prevPath }()
+
+	db, err := openSQLite()
+	if err != nil {
+		t.Fatalf("openSQLite: %v", err)
+	}
+	defer func() {
+		if sqlDB, err := db.DB(); err == nil {
+			_ = sqlDB.Close()
+		}
+	}()
+
+	var mode string
+	if err := db.Raw("PRAGMA journal_mode").Scan(&mode).Error; err != nil {
+		t.Fatalf("read journal_mode: %v", err)
+	}
+	if !strings.EqualFold(mode, "wal") {
+		t.Fatalf("journal_mode = %q, want wal (DSN must request WAL for the production file DB)", mode)
 	}
 }

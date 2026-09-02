@@ -102,7 +102,11 @@ func openMySQL(dsn string) (*gorm.DB, error) {
 func openSQLite() (*gorm.DB, error) {
 	logger.SysLog("SQL_DSN not set, using SQLite as database")
 	common.UsingSQLite = true
-	dsn := fmt.Sprintf("%s?_busy_timeout=%d", common.SQLitePath, common.SQLiteBusyTimeout)
+	dsn := fmt.Sprintf("%s?_busy_timeout=%d&_journal_mode=WAL", common.SQLitePath, common.SQLiteBusyTimeout)
+	// WAL: readers no longer block the writer. The quota/log write path is
+	// hot on every request; under the default rollback journal a concurrent
+	// read (channel cache sync, log queries) stalls request settlement
+	// (observed as multi-second SLOW SQL on the NAS logs table).
 	return gorm.Open(sqlite.Open(dsn), &gorm.Config{
 		PrepareStmt: true, // precompile SQL
 	})

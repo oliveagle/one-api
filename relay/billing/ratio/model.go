@@ -683,6 +683,33 @@ func UpdateModelRatioByJSONString(jsonStr string) error {
 	return json.Unmarshal([]byte(jsonStr), &ModelRatio)
 }
 
+// DefaultMissingModelRatio is the fallback billing ratio for models with no
+// configured ratio; it matches the historical default of 30.
+const DefaultMissingModelRatio = 30.0
+
+// missingRatioWarnOnce deduplicates the "ratio not found" warning per model
+// name so custom models do not flood the error log on every request.
+var missingRatioWarnOnce = onceByName{}
+
+// onceByName logs a given name at warn level only the first time it is seen.
+type onceByName struct {
+	mu   sync.Mutex
+	seen map[string]bool
+}
+
+func (o *onceByName) DoOrLogOnce(name string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.seen == nil {
+		o.seen = make(map[string]bool)
+	}
+	if o.seen[name] {
+		return
+	}
+	o.seen[name] = true
+	logger.SysLog("model ratio not found (using default 30, configure options ModelRatio): " + name)
+}
+
 func GetModelRatio(name string, channelType int) float64 {
 	modelRatioLock.RLock()
 	defer modelRatioLock.RUnlock()
@@ -705,8 +732,12 @@ func GetModelRatio(name string, channelType int) float64 {
 	if ratio, ok := DefaultModelRatio[name]; ok {
 		return ratio
 	}
-	logger.SysError("model ratio not found: " + name)
-	return 30
+	// Missing ratios are EXPECTED for custom/self-hosted models (they fall
+	// back to the default 30): one warn per model name, not per request —
+	// this line fired 17k+ times a day in production logs. Configure real
+	// prices via the options-table ModelRatio JSON.
+	missingRatioWarnOnce.DoOrLogOnce(name)
+	return DefaultMissingModelRatio
 }
 
 func CompletionRatio2JSONString() string {
