@@ -25,9 +25,9 @@ package controller
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"fmt"
 	"strings"
 	"testing"
 
@@ -107,7 +107,10 @@ func setupMockRelayStack(t *testing.T) *gin.Engine {
 func setupMockRelayStackWithOptions(t *testing.T, opts mockStackOptions) *gin.Engine {
 	t.Helper()
 
-	// 1. Hermetic infra: disable Redis, fresh SQLite with all models.
+	// 1. Hermetic infra: disable Redis, fresh SQLite with all models, and a
+	// clean 429-penalty registry so cooldown tests don't bleed into each other.
+	model.ResetChannelCooldowns()
+	t.Cleanup(model.ResetChannelCooldowns)
 	testutil.DisableRedis(t)
 	gormDB := testutil.NewMockDBForCommon(t)
 	model.DB = gormDB

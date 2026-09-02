@@ -44,6 +44,8 @@ import (
 	"testing"
 
 	"github.com/songquanpeng/one-api/common/config"
+	dbmodel "github.com/songquanpeng/one-api/model"
+	relaymodel "github.com/songquanpeng/one-api/relay/model"
 )
 
 // basicResponsesBody returns a minimal Responses API request body for
@@ -394,5 +396,87 @@ func TestChannelAddressing_TrimsSurroundingWhitespace(t *testing.T) {
 		`{"model":" mock-channel ","messages":[{"role":"user","content":"hi"}]}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (trimmed to mock-channel); body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// ===========================================================================
+// 429 routing penalties: quota/rate-limit 429s mark a global cooldown so
+// random and sticky picks steer around the throttled channel while
+// alternatives exist; the plain pick remains the fallback when everything
+// is cooling.
+// ===========================================================================
+
+func TestMarkChannelPenalty_Classification(t *testing.T) {
+	reset := func() { dbmodel.ResetChannelCooldowns() }
+
+	t.Run("quota 429 with reset time", func(t *testing.T) {
+		reset()
+		err := &relaymodel.ErrorWithStatusCode{
+			StatusCode: http.StatusTooManyRequests,
+			Error:      relaymodel.Error{Message: "You have exceeded the monthly usage quota. It will reset at 2026-08-27 23:59:59 +0800 CST. We recommend upgrading your plan."},
+		}
+		markChannelPenalty(42, err)
+		if !dbmodel.ChannelCoolingDown(42) {
+			t.Fatal("quota 429 must cool the channel down")
+		}
+	})
+
+	t.Run("kimi weekly limit without reset time", func(t *testing.T) {
+		reset()
+		err := &relaymodel.ErrorWithStatusCode{
+			StatusCode: http.StatusTooManyRequests,
+			Error:      relaymodel.Error{Message: "You've reached your weekly (7-day) usage limit. Your quota will reset soon."},
+		}
+		markChannelPenalty(43, err)
+		if !dbmodel.ChannelCoolingDown(43) {
+			t.Fatal("usage-limit 429 must cool the channel down")
+		}
+	})
+
+	t.Run("plain rate limit gets a short cooldown", func(t *testing.T) {
+		reset()
+		err := &relaymodel.ErrorWithStatusCode{
+			StatusCode: http.StatusTooManyRequests,
+			Error:      relaymodel.Error{Message: "rate limited by mock"},
+		}
+		markChannelPenalty(44, err)
+		if !dbmodel.ChannelCoolingDown(44) {
+			t.Fatal("plain 429 must cool the channel down (short window)")
+		}
+	})
+
+	t.Run("non-429 carries no penalty", func(t *testing.T) {
+		reset()
+		err := &relaymodel.ErrorWithStatusCode{
+			StatusCode: http.StatusInternalServerError,
+			Error:      relaymodel.Error{Message: "upstream exploded"},
+		}
+		markChannelPenalty(45, err)
+		if dbmodel.ChannelCoolingDown(45) {
+			t.Fatal("5xx must not trigger the 429 penalty registry")
+		}
+	})
+}
+
+func TestRelay429Penalty_CooldownMarkedAndFallbackServes(t *testing.T) {
+	// Single-channel stack: a mock 429 fails the request AND marks the
+	// cooldown; the NEXT request (healthy behavior) must still be served by
+	// the same channel — with no alternative the picker falls back instead
+	// of returning "no channel".
+	r := setupMockRelayStack(t)
+
+	rec := doRelayRequest(t, r, "Bearer sk-test", "error-429",
+		basicChatBody(map[string]any{"model": mockModelName}))
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429; body=%s", rec.Code, rec.Body.String())
+	}
+	if !dbmodel.ChannelCoolingDown(1) {
+		t.Fatal("the 429-ing channel must be marked cooling")
+	}
+
+	rec = doRelayRequest(t, r, "Bearer sk-test", "openai-chat",
+		basicChatBody(map[string]any{"model": mockModelName}))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("follow-up request must fall back to the cooling channel; status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }

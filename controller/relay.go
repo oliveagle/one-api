@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common"
@@ -91,6 +94,7 @@ func Relay(c *gin.Context) {
 	// exhausted) and kept hitting it, with the router none the wiser.
 	if retryable {
 		router.Fail(group, originalModel, sessionKey, lastFailedChannelId)
+		markChannelPenalty(lastFailedChannelId, bizErr)
 	}
 
 	for i := retryTimes; i > 0; i-- {
@@ -101,7 +105,7 @@ func Relay(c *gin.Context) {
 			// session to it.
 			channel, err = router.ChooseAlternative(group, originalModel, sessionKey, exclude)
 		} else {
-			channel, err = dbmodel.CacheGetRandomSatisfiedChannel(group, originalModel, i != retryTimes)
+			channel, err = dbmodel.CacheGetRandomSatisfiedChannelExcluding(group, originalModel, i != retryTimes, exclude)
 		}
 		if err != nil {
 			logger.Errorf(ctx, "choose channel for retry failed: %+v", err)
@@ -127,6 +131,7 @@ func Relay(c *gin.Context) {
 		// client 400) is not the node's fault, so stop retrying.
 		if shouldRetry(c, bizErr.StatusCode) {
 			router.Fail(group, originalModel, sessionKey, channelId)
+			markChannelPenalty(channelId, bizErr)
 			go processChannelRelayError(ctx, userId, channelId, channelName, *bizErr)
 		} else {
 			go processChannelRelayError(ctx, userId, channelId, channelName, *bizErr)
@@ -216,4 +221,62 @@ func RelayNotFound(c *gin.Context) {
 	c.JSON(http.StatusNotFound, gin.H{
 		"error": err,
 	})
+}
+
+// ---------------------------------------------------------------------------
+// 429 routing penalties
+// ---------------------------------------------------------------------------
+
+// quota429Re matches throttles caused by exhausted account quota rather than
+// short-lived concurrency limits (volc "exceeded the monthly usage quota",
+// kimi "reached your weekly (7-day) usage limit", OpenAI "quota").
+var quota429Re = regexp.MustCompile(`(?i)(quota|usage limit|usage quota|billing|exceeded.*limit|reached.*limit)`)
+
+// resetAtRe extracts the upstream's advertised quota reset time, e.g.
+// "It will reset at 2026-08-27 23:59:59 +0800 CST" (volc) or an RFC3339 ts.
+var resetAtRe = regexp.MustCompile(`reset (?:at|on)\s+([0-9]{4}-[0-9]{2}-[0-9]{2}[ T][0-9]{2}:[0-9]{2}:[0-9]{2}(?:[.,][0-9]+)?(?:\s*[+-][0-9]{4})?(?:\s*[A-Z]{2,5})?)`)
+
+const (
+	// quotaCooldownFallback applies when the upstream names no reset time.
+	quotaCooldownFallback = 15 * time.Minute
+	// quotaCooldownMax caps quota penalties: skipping a channel until a
+	// monthly reset on the strength of one 429 is too aggressive — an hourly
+	// re-probe costs one rejected request and self-heals the pool.
+	quotaCooldownMax = 1 * time.Hour
+	// rateLimitCooldown applies to plain (non-quota) 429 throttles.
+	rateLimitCooldown = 60 * time.Second
+)
+
+var penaltyMu sync.Mutex
+
+// markChannelPenalty records a routing cooldown for a channel whose upstream
+// returned 429: quota-exhausted channels are skipped until their advertised
+// reset (capped at quotaCooldownMax, with a fallback window when no reset
+// time is parseable), plain rate limits for a short window. Non-429 errors
+// carry no penalty — 5xx cooldowns are the sticky store's business, and
+// 4xx's are usually the client's fault.
+func markChannelPenalty(channelId int, err *model.ErrorWithStatusCode) {
+	if err == nil || err.StatusCode != http.StatusTooManyRequests {
+		return
+	}
+	var until time.Time
+	if quota429Re.MatchString(err.Error.Message) {
+		until = time.Now().Add(quotaCooldownFallback)
+		if m := resetAtRe.FindStringSubmatch(err.Error.Message); m != nil {
+			ts := strings.TrimSpace(m[1])
+			if parsed, perr := time.Parse("2006-01-02 15:04:05 -0700 MST", ts); perr == nil && parsed.After(time.Now()) {
+				until = parsed
+			} else if parsed, perr := time.Parse(time.RFC3339, ts); perr == nil && parsed.After(time.Now()) {
+				until = parsed
+			}
+		}
+		if d := time.Until(until); d > quotaCooldownMax {
+			until = time.Now().Add(quotaCooldownMax)
+		}
+	} else {
+		until = time.Now().Add(rateLimitCooldown)
+	}
+	penaltyMu.Lock()
+	defer penaltyMu.Unlock()
+	dbmodel.MarkChannelCooldown(channelId, until)
 }
