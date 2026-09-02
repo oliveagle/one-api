@@ -24,10 +24,15 @@ func collectorReachable(t *testing.T) {
 
 // TestDisabledIsNoop 验证 OTEL_ENABLED=false 时 Init 是 no-op，指标句柄为 nil。
 func TestDisabledIsNoop(t *testing.T) {
+	// "noop" = a disabled Init must not CREATE instruments. Earlier tests
+	// (E2E) may have populated the package-level instruments in-process,
+	// and with -count>1 they persist — so compare against the pre-call
+	// state instead of absolute nil.
+	before := HttpRequestsTotal
 	config.OtelEnabled = false
 	Init()
-	if HttpRequestsTotal != nil {
-		t.Fatal("expected no metric instruments when disabled")
+	if HttpRequestsTotal != before {
+		t.Fatal("disabled Init must not touch metric instruments")
 	}
 }
 

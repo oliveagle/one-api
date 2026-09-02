@@ -9,6 +9,8 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
+	"time"
 )
 
 type GeneralErrorResponse struct {
@@ -72,6 +74,9 @@ func RelayErrorHandler(resp *http.Response) (ErrorWithStatusCode *model.ErrorWit
 			Param:   strconv.Itoa(resp.StatusCode),
 		},
 	}
+	if resp.StatusCode == http.StatusTooManyRequests {
+		ErrorWithStatusCode.RetryAfterMs = parseRetryAfterMs(resp.Header.Get("Retry-After"))
+	}
 	responseBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return
@@ -98,4 +103,26 @@ func RelayErrorHandler(resp *http.Response) (ErrorWithStatusCode *model.ErrorWit
 		ErrorWithStatusCode.Error.Message = fmt.Sprintf("bad response status code %d", resp.StatusCode)
 	}
 	return
+}
+
+// parseRetryAfterMs parses a Retry-After header value: delta-seconds
+// ("120") per RFC 7231 §7.1.3, or an HTTP-date (rare). 0 when absent or
+// unparseable.
+func parseRetryAfterMs(value string) int64 {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0
+	}
+	if secs, err := strconv.ParseInt(value, 10, 64); err == nil {
+		if secs < 0 {
+			return 0
+		}
+		return secs * 1000
+	}
+	if ts, err := http.ParseTime(value); err == nil {
+		if ms := time.Since(ts).Milliseconds() * -1; ms > 0 {
+			return ms
+		}
+	}
+	return 0
 }

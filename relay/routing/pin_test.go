@@ -267,3 +267,25 @@ func TestRebind_DoesNotCountAsRequest(t *testing.T) {
 		}
 	}
 }
+
+// TestNodesReportsGlobal429Cooldown pins the ops-view contract: a channel
+// cooled by the global 429 penalty registry (not the sticky store) must show
+// cooling_down=true in the nodes listing.
+func TestNodesReportsGlobal429Cooldown(t *testing.T) {
+	dbmodel.ResetChannelCooldowns()
+	t.Cleanup(dbmodel.ResetChannelCooldowns)
+
+	r, _ := pinRouter(t)
+	// Cool one channel through the GLOBAL registry only — the sticky store
+	// never sees a failure for it.
+	dbmodel.MarkChannelCooldown(5, time.Now().Add(time.Minute))
+
+	for _, n := range r.Nodes("g", "coding_medium", "") {
+		if n.ChannelId == 5 && !n.CoolingDown {
+			t.Fatal("globally cooled channel must report cooling_down=true")
+		}
+		if n.ChannelId != 5 && n.CoolingDown {
+			t.Fatalf("channel %d wrongly marked cooling", n.ChannelId)
+		}
+	}
+}

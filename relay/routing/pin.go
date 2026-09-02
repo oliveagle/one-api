@@ -51,6 +51,14 @@ func (r *Router) Nodes(group, model, session string) []NodeInfo {
 		counts[st.ChannelId] = st.Sessions
 		cooling[st.ChannelId] = !st.CoolingUntil.IsZero()
 	}
+	// Union with the global 429 penalty registry (quota/rate-limit
+	// cooldowns): the ops view must show every reason a node is being
+	// steered away from, not just sticky-store cooldowns.
+	for _, ch := range candidates {
+		if dbmodel.ChannelCoolingDown(ch.Id) {
+			cooling[ch.Id] = true
+		}
+	}
 	nodes := make([]NodeInfo, 0, len(candidates))
 	for _, ch := range candidates {
 		nodes = append(nodes, NodeInfo{

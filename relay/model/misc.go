@@ -19,6 +19,11 @@ type Error struct {
 	Type    string `json:"type"`
 	Param   string `json:"param"`
 	Code    any    `json:"code"`
+	// RetryAfterMs carries the upstream Retry-After header (milliseconds)
+	// for 429 responses. Transport-only: never serialized to clients, but
+	// the 429 routing penalty consults it so throttle windows match what
+	// the upstream asked for instead of a fixed guess.
+	RetryAfterMs int64 `json:"-"`
 }
 
 type ErrorWithStatusCode struct {

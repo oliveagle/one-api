@@ -29,6 +29,17 @@ func TestConstants(t *testing.T) {
 // (Qwen / DeepSeek / Doubao / Zhipu / etc.) providers. If any of these is
 // removed accidentally, the billing calculator falls back to the "30" default
 // and overcharges the user.
+
+// restoreRatioDefaults puts ModelRatio/CompletionRatio back to their
+// init-time mirrors so repeated runs (-count>1) start from the same state.
+func restoreRatioDefaults(t *testing.T) {
+	t.Helper()
+	m, _ := json.Marshal(DefaultModelRatio)
+	_ = UpdateModelRatioByJSONString(string(m))
+	c, _ := json.Marshal(DefaultCompletionRatio)
+	_ = UpdateCompletionRatioByJSONString(string(c))
+}
+
 func TestModelRatio_HasCoreModels(t *testing.T) {
 	required := []string{
 		"gpt-4o",
@@ -83,6 +94,7 @@ func TestUpdateModelRatioByJSONString(t *testing.T) {
 
 	// Use a JSON object with just one key. After update, getting a missing key
 	// should fall back to the "30" default in GetModelRatio.
+	t.Cleanup(func() { restoreRatioDefaults(t) })
 	if err := UpdateModelRatioByJSONString(`{"my-model":7}`); err != nil {
 		t.Fatalf("UpdateModelRatioByJSONString: %v", err)
 	}
@@ -108,7 +120,10 @@ func TestUpdateModelRatioByJSONString_Invalid(t *testing.T) {
 // saved config without losing the operator's customisations.
 func TestAddNewMissingRatio(t *testing.T) {
 	t.Cleanup(func() {
-		_ = UpdateModelRatioByJSONString(`{}`)
+		// Restore the init-time mirror instead of wiping the map: tests run
+		// with -count>1 share process globals, and an empty ModelRatio breaks
+		// TestDefaultModelRatio_Initialized on the next iteration.
+		restoreRatioDefaults(t)
 	})
 
 	const override = `{"gpt-4o":99,"custom-model":3}`
@@ -142,8 +157,8 @@ func TestAddNewMissingRatio_InvalidInputPassesThrough(t *testing.T) {
 // operators can offer channel-specific pricing. After that, the plain model
 // key. Falls back to 30 for unknown models.
 func TestGetModelRatio_CompoundKey(t *testing.T) {
-	old := ModelRatio
-	t.Cleanup(func() { ModelRatio = old })
+	old, oldDefault := ModelRatio, DefaultModelRatio
+	t.Cleanup(func() { ModelRatio, DefaultModelRatio = old, oldDefault })
 
 	ModelRatio = map[string]float64{
 		"foo":       1,
@@ -170,8 +185,8 @@ func TestGetModelRatio_CompoundKey(t *testing.T) {
 // before lookup. If the strip regresses, the model ratio table never finds
 // the entry.
 func TestGetModelRatio_QwenInternetStrip(t *testing.T) {
-	old := ModelRatio
-	t.Cleanup(func() { ModelRatio = old })
+	old, oldDefault := ModelRatio, DefaultModelRatio
+	t.Cleanup(func() { ModelRatio, DefaultModelRatio = old, oldDefault })
 
 	ModelRatio = map[string]float64{"qwen-plus": 4}
 	DefaultModelRatio = ModelRatio
@@ -203,6 +218,7 @@ func TestUpdateCompletionRatioByJSONString(t *testing.T) {
 	old := CompletionRatio
 	t.Cleanup(func() { CompletionRatio = old })
 
+	t.Cleanup(func() { restoreRatioDefaults(t) })
 	if err := UpdateCompletionRatioByJSONString(`{"x":2}`); err != nil {
 		t.Fatalf("update: %v", err)
 	}
@@ -220,7 +236,7 @@ func TestUpdateCompletionRatioByJSONString(t *testing.T) {
 func TestGetCompletionRatio_Branches(t *testing.T) {
 	// Take a fresh snapshot so test doesn't depend on the seed table.
 	t.Cleanup(func() {
-		_ = UpdateCompletionRatioByJSONString(`{}`)
+		restoreRatioDefaults(t)
 	})
 	_ = UpdateCompletionRatioByJSONString(`{}`)
 
@@ -308,6 +324,9 @@ func TestGetCompletionRatio_StripsQwenInternetSuffix(t *testing.T) {
 // valid but irrelevant shape (catch-all pass-through). This is a sanity check
 // only; the production code never returns structured errors here.
 func TestUpdateCompletionRatioByJSONString_Invalid(t *testing.T) {
+	// The update wipes the table before parsing; a malformed payload must
+	// not leave it empty for the next test (-count>1 shares globals).
+	t.Cleanup(func() { restoreRatioDefaults(t) })
 	if err := UpdateCompletionRatioByJSONString(`{`); err == nil {
 		t.Fatal("expected error for malformed JSON")
 	}
