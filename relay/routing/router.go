@@ -102,8 +102,9 @@ func (r *Router) chooseSticky(group, model, session string) (*dbmodel.Channel, e
 		if ch == nil {
 			// channel is gone for this model — full migration
 			r.store.Forget(key)
-		} else if !r.store.IsCooledDown(id, now) {
-			// happy path: channel exists and healthy
+		} else if !r.store.IsCooledDown(id, now) && !dbmodel.ChannelCoolingDown(id) {
+			// happy path: channel exists, healthy, and not under a global
+			// 429 routing penalty (quota/rate-limit cooldown)
 			r.store.Touch(key, session, group, model, ch.Id)
 			return ch, nil
 		} else if r.store.GetConsecutiveFailures(key) < threshold {
@@ -123,9 +124,10 @@ func (r *Router) chooseSticky(group, model, session string) (*dbmodel.Channel, e
 	// down, fall back to the full list rather than failing the request.
 	var eligible []*dbmodel.Channel
 	for _, ch := range candidates {
-		if !r.store.IsCooledDown(ch.Id, now) {
-			eligible = append(eligible, ch)
+		if r.store.IsCooledDown(ch.Id, now) || dbmodel.ChannelCoolingDown(ch.Id) {
+			continue
 		}
+		eligible = append(eligible, ch)
 	}
 	if len(eligible) == 0 {
 		eligible = candidates
@@ -146,7 +148,7 @@ func (r *Router) chooseAlternativeFrom(candidates []*dbmodel.Channel, excludeId 
 		if ch.Id == excludeId {
 			continue
 		}
-		if r.store.IsCooledDown(ch.Id, now) {
+		if r.store.IsCooledDown(ch.Id, now) || dbmodel.ChannelCoolingDown(ch.Id) {
 			continue
 		}
 		eligible = append(eligible, ch)
@@ -266,7 +268,7 @@ func DefaultRouter() *Router {
 
 var defaultRouter = &Router{
 	provider: &channelCacheProvider{},
-	store: NewStore(),
+	store:    NewStore(),
 }
 
 // newRouter creates a Router with explicit provider and store, used in tests.
@@ -283,6 +285,7 @@ func (p *channelCacheProvider) SatisfiedChannels(group, model string) []*dbmodel
 }
 
 func (p *channelCacheProvider) RandomSatisfied(group, model string, must bool) (*dbmodel.Channel, error) {
-	return dbmodel.CacheGetRandomSatisfiedChannel(group, model, must)
+	// nil exclude = apply only the global 429 cooldowns, with the plain
+	// random pick as fallback when every candidate is cooling.
+	return dbmodel.CacheGetRandomSatisfiedChannelExcluding(group, model, must, nil)
 }
-

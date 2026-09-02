@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/songquanpeng/one-api/common/config"
+	"time"
 )
 
 // seedChannelCacheForTest replaces the in-memory channel cache with a fixed
@@ -87,5 +88,58 @@ func TestCacheGetRandomSatisfiedChannel_AllLastResortStillServed(t *testing.T) {
 		if ch.Id != 3 && ch.Id != 4 {
 			t.Fatalf("unexpected channel %d", ch.Id)
 		}
+	}
+}
+
+func TestCacheGetRandomSatisfiedChannelExcluding_AvoidsExcludedAndCooling(t *testing.T) {
+	prev := config.MemoryCacheEnabled
+	config.MemoryCacheEnabled = true
+	defer func() { config.MemoryCacheEnabled = prev }()
+	ResetChannelCooldowns()
+
+	mk := func(id int) *Channel {
+		p := int64(0)
+		return &Channel{Id: id, Name: "ch", Priority: &p}
+	}
+	seedChannelCacheForTest("g", "m", []*Channel{mk(1), mk(2), mk(3)})
+
+	// exclude 1, cool 2 → only 3 may be picked.
+	MarkChannelCooldown(2, time.Now().Add(time.Minute))
+	exclude := map[int]bool{1: true}
+	for i := 0; i < 100; i++ {
+		ch, err := CacheGetRandomSatisfiedChannelExcluding("g", "m", false, exclude)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if ch.Id != 3 {
+			t.Fatalf("pick landed on blocked channel %d (want 3)", ch.Id)
+		}
+	}
+
+	// All candidates blocked (excluded or cooling) → graceful fallback to
+	// the plain random pick instead of "channel not found".
+	ResetChannelCooldowns()
+	MarkChannelCooldown(1, time.Now().Add(time.Minute))
+	MarkChannelCooldown(2, time.Now().Add(time.Minute))
+	MarkChannelCooldown(3, time.Now().Add(time.Minute))
+	for i := 0; i < 50; i++ {
+		ch, err := CacheGetRandomSatisfiedChannelExcluding("g", "m", false, nil)
+		if err != nil {
+			t.Fatalf("fallback should still return a channel, got: %v", err)
+		}
+		if ch.Id < 1 || ch.Id > 3 {
+			t.Fatalf("fallback picked unknown channel %d", ch.Id)
+		}
+	}
+
+	// Cooldown expiry is honored lazily.
+	ResetChannelCooldowns()
+	if ChannelCoolingDown(2) {
+		t.Fatal("stale cooldown survived reset")
+	}
+	// Past deadlines are not stored at all.
+	MarkChannelCooldown(1, time.Now().Add(-time.Second))
+	if ChannelCoolingDown(1) {
+		t.Fatal("expired cooldown must not count as cooling")
 	}
 }

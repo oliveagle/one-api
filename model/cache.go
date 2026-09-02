@@ -229,20 +229,23 @@ func CacheGetRandomSatisfiedChannel(group string, model string, ignoreFirstPrior
 		return GetRandomSatisfiedChannel(group, model, ignoreFirstPriority)
 	}
 	channelSyncLock.RLock()
-	defer channelSyncLock.RUnlock()
 	channels := group2model2channels[group][model]
+	channelSyncLock.RUnlock()
 	if len(channels) == 0 {
 		return nil, errors.New("channel not found")
 	}
+	return randomTieredPick(channels, ignoreFirstPriority), nil
+}
+
+// randomTieredPick returns one channel from a non-empty, priority-sorted
+// candidate list. It partitions at the first priority boundary so the
+// highest-priority tier is always preferred; negative-priority tiers
+// (last-resort providers) are only picked on explicit retry
+// (ignoreFirstPriority) or when no higher tier exists. Callers pass a slice
+// they own (or the cache's slice read-only); the picker never mutates it.
+func randomTieredPick(channels []*Channel, ignoreFirstPriority bool) *Channel {
 	endIdx := len(channels)
-	// choose by priority: partition at the first priority boundary so the
-	// highest-priority tier is always preferred. Unlike the old code (which
-	// only partitioned when the top priority was > 0), this also separates
-	// negative-priority tiers: channels with a negative priority (last-resort
-	// providers) stay out of the primary random pool and are only picked on
-	// explicit retry (ignoreFirstPriority) or when no higher tier exists.
-	firstChannel := channels[0]
-	firstPriority := firstChannel.GetPriority()
+	firstPriority := channels[0].GetPriority()
 	for i := range channels {
 		if channels[i].GetPriority() != firstPriority {
 			endIdx = i
@@ -255,7 +258,83 @@ func CacheGetRandomSatisfiedChannel(group string, model string, ignoreFirstPrior
 			idx = random.RandRange(endIdx, len(channels))
 		}
 	}
-	return channels[idx], nil
+	return channels[idx]
+}
+
+// CacheGetRandomSatisfiedChannelExcluding picks a random candidate for
+// (group, model), preferring channels that neither already failed during this
+// request (exclude) nor are under a routing cooldown (see
+// MarkChannelCooldown). When every candidate is excluded or cooling it
+// degrades to the plain random pick, so a small pool never turns into "no
+// channel available".
+func CacheGetRandomSatisfiedChannelExcluding(group string, model string, ignoreFirstPriority bool, exclude map[int]bool) (*Channel, error) {
+	if !config.MemoryCacheEnabled {
+		return GetRandomSatisfiedChannel(group, model, ignoreFirstPriority)
+	}
+	channelSyncLock.RLock()
+	channels := group2model2channels[group][model]
+	var eligible []*Channel
+	if len(channels) > 0 {
+		eligible = make([]*Channel, 0, len(channels))
+		for _, ch := range channels {
+			if exclude != nil && exclude[ch.Id] {
+				continue
+			}
+			if ChannelCoolingDown(ch.Id) {
+				continue
+			}
+			eligible = append(eligible, ch)
+		}
+	}
+	channelSyncLock.RUnlock()
+	if len(eligible) == 0 {
+		return CacheGetRandomSatisfiedChannel(group, model, ignoreFirstPriority)
+	}
+	return randomTieredPick(eligible, ignoreFirstPriority), nil
+}
+
+// ---------------------------------------------------------------------------
+// Channel cooldown registry
+// ---------------------------------------------------------------------------
+
+// channelCooldowns records per-channel routing penalties shared by every
+// routing path (random picks and sticky bindings). Quota-exhausted or
+// rate-limited channels are skipped while alternatives exist; pickers fall
+// back to them once every candidate is cooling, so availability never drops
+// to zero. It lives at the model layer because the cache picker must consult
+// it and relay/routing already imports model (the reverse would cycle).
+var channelCooldowns sync.Map // channelId int -> time.Time deadline
+
+// MarkChannelCooldown penalizes a channel for routing until the deadline.
+// Zero or past deadlines are ignored.
+func MarkChannelCooldown(channelId int, until time.Time) {
+	if until.IsZero() || !until.After(time.Now()) {
+		return
+	}
+	channelCooldowns.Store(channelId, until)
+}
+
+// ChannelCoolingDown reports whether a channel is still under a routing
+// penalty; sticky routing consults it in addition to its own cooldown store.
+func ChannelCoolingDown(channelId int) bool {
+	v, ok := channelCooldowns.Load(channelId)
+	if !ok {
+		return false
+	}
+	deadline, _ := v.(time.Time)
+	if time.Now().After(deadline) {
+		channelCooldowns.Delete(channelId) // lazy expiry
+		return false
+	}
+	return true
+}
+
+// ResetChannelCooldowns clears the routing-penalty registry (test isolation).
+func ResetChannelCooldowns() {
+	channelCooldowns.Range(func(key, _ any) bool {
+		channelCooldowns.Delete(key)
+		return true
+	})
 }
 
 // CacheGetSatisfiedChannels returns the memory-cached candidate channels for
