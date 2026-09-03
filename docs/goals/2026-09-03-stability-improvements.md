@@ -52,6 +52,19 @@
   可见性、wire-mismatch 不粘性冷却（含故障转移 + 后续请求）
 
 
+## 事故复盘与配置/日志库隔离（2026-09-03 第三轮）
+
+22:08 生产事故：logs 表损坏页把整个 SQLite 文件拖成 malformed（索引不同步
+→ REINDEX 也撞坏页），relay FATAL 崩溃循环。`.recover` 重建 + 丢弃打捞残骸
+（lost_and_found 185 万行日志残骸，配置表零损失），主库从 111MB 缩到 **156KB**。
+
+**结论：logs 表会实质影响配置表稳定性**（同文件 = 同损坏域 + 同写锁）。
+已实施隔离（你的设计判断：配置集群同步、日志本地不同步）：
+- `LOG_SQL_DSN=sqlite://<path>` 新增 SQLite 文件分支（此前裸路径被当
+  MySQL DSN，此语法缺口即本轮修复）；独立 WAL、独立 AutoMigrate
+- 日志的所有高频写/清理/迁移从此不碰配置库；配置库缩小到可整体同步的量级
+- 四台已切换；TestInitLogDB_SqliteFileSplit 钉住行为
+
 ## 推进记录（2026-09-03 第二轮）
 
 - #6 渠道名寻址缓存：`name2channel` 索引随 InitChannelCache 重建

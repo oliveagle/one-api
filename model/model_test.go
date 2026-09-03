@@ -1,6 +1,10 @@
 package model
 
 import (
+	"context"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -8,8 +12,6 @@ import (
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
-	"path/filepath"
-	"strings"
 )
 
 // setupMockDB wires a fresh SQLite DB into the package-level model.DB.
@@ -427,5 +429,39 @@ func TestSQLiteOpensInWALMode(t *testing.T) {
 	}
 	if !strings.EqualFold(mode, "wal") {
 		t.Fatalf("journal_mode = %q, want wal (DSN must request WAL for the production file DB)", mode)
+	}
+}
+
+// TestInitLogDB_SqliteFileSplit pins the config/log DB split: with
+// LOG_SQL_DSN=sqlite://<path>, logs land in the dedicated file (with WAL)
+// and the config DB is untouched by log writes.
+func TestInitLogDB_SqliteFileSplit(t *testing.T) {
+	setupMockDB(t)
+	prevDSN, prevLogDB := os.Getenv("LOG_SQL_DSN"), LOG_DB
+	t.Setenv("LOG_SQL_DSN", "sqlite://"+filepath.Join(t.TempDir(), "logs.db"))
+	t.Cleanup(func() {
+		os.Setenv("LOG_SQL_DSN", prevDSN)
+		LOG_DB = prevLogDB
+	})
+
+	InitLogDB()
+	if LOG_DB == DB {
+		t.Fatal("LOG_DB must be a separate handle when LOG_SQL_DSN is set")
+	}
+
+	RecordLog(context.Background(), 1, LogTypeConsume, "split-test")
+	var inLogDB int64
+	LOG_DB.Model(&Log{}).Count(&inLogDB)
+	if inLogDB == 0 {
+		t.Fatal("log row must land in the dedicated LOG_DB")
+	}
+	var inMainDB int64
+	DB.Model(&Log{}).Count(&inMainDB)
+	if inMainDB != 0 {
+		t.Fatalf("config DB must stay log-free, found %d rows", inMainDB)
+	}
+	var mode string
+	if err := LOG_DB.Raw("PRAGMA journal_mode").Scan(&mode).Error; err != nil || !strings.EqualFold(mode, "wal") {
+		t.Fatalf("log db journal_mode = %q err=%v, want wal", mode, err)
 	}
 }
