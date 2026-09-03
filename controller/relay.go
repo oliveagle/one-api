@@ -71,7 +71,7 @@ func Relay(c *gin.Context) {
 	requestId := c.GetString(helper.RequestIdKey)
 	// retryable describes the *error*; retryTimes describes the configuration.
 	// Keep them separate: cooldown depends on the former, the retry loop on both.
-	retryable := shouldRetry(c, bizErr.StatusCode)
+	retryable := shouldRetry(c, bizErr.StatusCode) || upstreamQuirk400(bizErr)
 	retryTimes := config.RetryTimes
 	if !retryable {
 		logger.Errorf(ctx, "relay error happen, status code is %d, won't retry in this case", bizErr.StatusCode)
@@ -131,7 +131,7 @@ func Relay(c *gin.Context) {
 		// Only cool the node down (and keep trying other nodes) on retryable
 		// errors that indicate a node problem. A non-retryable error (e.g. a
 		// client 400) is not the node's fault, so stop retrying.
-		if shouldRetry(c, bizErr.StatusCode) {
+		if shouldRetry(c, bizErr.StatusCode) || upstreamQuirk400(bizErr) {
 			if !wireMismatch(bizErr) {
 				router.Fail(group, originalModel, sessionKey, channelId)
 			}
@@ -191,6 +191,21 @@ func shouldRetry(c *gin.Context, statusCode int) bool {
 		return false
 	}
 	return true
+}
+
+// upstreamQuirk400 reports whether a 400 from the upstream is really a
+// transient server-side issue rather than the client's fault. Some
+// upstreams (volcengine ark) intermittently route Responses-API requests to
+// a backend that demands an internal "partial" parameter that is not part
+// of the OpenAI spec — the same request succeeds on retry. Without this,
+// the relay surfaces a bogus 400 to the client instead of failing over.
+func upstreamQuirk400(err *model.ErrorWithStatusCode) bool {
+	if err == nil || err.StatusCode != http.StatusBadRequest {
+		return false
+	}
+	msg := strings.ToLower(err.Error.Message)
+	// volc ark: "The request failed because it is missing `partial` parameter"
+	return strings.Contains(msg, "missing `partial` parameter")
 }
 
 func processChannelRelayError(ctx context.Context, userId int, channelId int, channelName string, err model.ErrorWithStatusCode) {
