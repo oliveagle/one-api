@@ -45,7 +45,7 @@
 
 ## 完成记录（2026-09-03）
 
-- 全套 `go test -race -count=2`（36 包）**全绿**
+- 全套 `go test -race -count=2`（37 包，干净检出）**全绿**
 - 顺手修复三个预存的测试隔离 flake（-count>1 才暴露）：
   ratio 全局表泄漏 ×4、observability 顺序依赖 ×1
 - 新增测试：WAL pragma、retry-after 解析/捕获/惩罚三层、nodes 全局冷却
