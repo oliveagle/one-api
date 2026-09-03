@@ -170,12 +170,23 @@ func CacheGetGroupModels(ctx context.Context, group string) ([]string, error) {
 var group2model2channels map[string]map[string][]*Channel
 var channelSyncLock sync.RWMutex
 
+// name2channel indexes enabled channels by name for channel-name model
+// addressing (GetChannelByName); rebuilt with the rest of the cache.
+var name2channel map[string][]*Channel
+
 func InitChannelCache() {
 	newChannelId2channel := make(map[int]*Channel)
 	var channels []*Channel
 	DB.Where("status = ?", ChannelStatusEnabled).Find(&channels)
 	for _, channel := range channels {
 		newChannelId2channel[channel.Id] = channel
+	}
+	newName2channel := make(map[string][]*Channel)
+	for _, channel := range channels {
+		name := strings.TrimSpace(channel.Name)
+		if name != "" {
+			newName2channel[name] = append(newName2channel[name], channel)
+		}
 	}
 	var abilities []*Ability
 	DB.Find(&abilities)
@@ -212,6 +223,7 @@ func InitChannelCache() {
 
 	channelSyncLock.Lock()
 	group2model2channels = newGroup2model2channels
+	name2channel = newName2channel
 	channelSyncLock.Unlock()
 	logger.SysLog("channels synced from database")
 }

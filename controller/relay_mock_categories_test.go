@@ -520,3 +520,42 @@ func TestWireMismatchDoesNotStickyCool(t *testing.T) {
 		}
 	}
 }
+
+// TestTokenRPMLimit_Exceeded pins the per-token throttle end to end: with
+// rpm_limit=2 the third rapid relay POST gets 429 with a Retry-After hint
+// and the token_rpm_exceeded code, while a request under the limit sails
+// through the whole pipeline.
+func TestTokenRPMLimit_Exceeded(t *testing.T) {
+	r := setupMockRelayStackWithOptions(t, mockStackOptions{tokenRPM: 2})
+
+	for i := 1; i <= 2; i++ {
+		rec := doRelayRequest(t, r, "Bearer sk-test", "openai-chat",
+			basicChatBody(map[string]any{"model": mockModelName}))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("request %d under the limit failed: %d %s", i, rec.Code, rec.Body.String())
+		}
+	}
+	rec := doRelayRequest(t, r, "Bearer sk-test", "openai-chat",
+		basicChatBody(map[string]any{"model": mockModelName}))
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("third request status = %d, want 429; body=%s", rec.Code, rec.Body.String())
+	}
+	if ra := rec.Header().Get("Retry-After"); ra == "" {
+		t.Error("429 must carry a Retry-After header")
+	}
+	if !strings.Contains(rec.Body.String(), "token_rpm_exceeded") {
+		t.Errorf("error should carry token_rpm_exceeded: %s", rec.Body.String())
+	}
+}
+
+// TestTokenRPMLimit_ZeroDisables: the default (0) never throttles.
+func TestTokenRPMLimit_ZeroDisables(t *testing.T) {
+	r := setupMockRelayStackWithOptions(t, mockStackOptions{})
+	for i := 0; i < 10; i++ {
+		rec := doRelayRequest(t, r, "Bearer sk-test", "openai-chat",
+			basicChatBody(map[string]any{"model": mockModelName}))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("request %d throttled despite rpm_limit=0: %d", i, rec.Code)
+		}
+	}
+}

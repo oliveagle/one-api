@@ -88,6 +88,22 @@ type ChannelConfig struct {
 // The key IS selected: the addressed channel forwards with its own
 // credential, exactly like an admin-pinned channel id.
 func GetChannelByName(name string, group string) (*Channel, error) {
+	// Prefer the in-memory name index (rebuilt with the channel cache every
+	// SYNC_FREQUENCY); fall back to a DB query when the cache is disabled so
+	// behavior never depends on deployment flags.
+	if config.MemoryCacheEnabled {
+		channelSyncLock.RLock()
+		channels := name2channel[strings.TrimSpace(name)]
+		channelSyncLock.RUnlock()
+		for _, ch := range channels {
+			for _, g := range strings.Split(ch.Group, ",") {
+				if strings.TrimSpace(g) == group {
+					return ch, nil
+				}
+			}
+		}
+		return nil, errors.New("channel not found")
+	}
 	var channels []*Channel
 	if err := DB.Where("name = ? AND status = ?", name, ChannelStatusEnabled).Find(&channels).Error; err != nil {
 		return nil, err
@@ -304,7 +320,13 @@ func DeleteDisabledChannel() (int64, error) {
 // can offer per-channel selection.
 func ChannelAddressedModels(group string) []string {
 	var channels []*Channel
-	if err := DB.Omit("key").Where("status = ?", ChannelStatusEnabled).Find(&channels).Error; err != nil {
+	if config.MemoryCacheEnabled {
+		channelSyncLock.RLock()
+		for _, list := range name2channel {
+			channels = append(channels, list...)
+		}
+		channelSyncLock.RUnlock()
+	} else if err := DB.Omit("key").Where("status = ?", ChannelStatusEnabled).Find(&channels).Error; err != nil {
 		return nil
 	}
 	names := make([]string, 0, len(channels))

@@ -1,10 +1,11 @@
 package model
 
 import (
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/songquanpeng/one-api/common/config"
-	"time"
 )
 
 // seedChannelCacheForTest replaces the in-memory channel cache with a fixed
@@ -17,6 +18,15 @@ func seedChannelCacheForTest(group, model string, channels []*Channel) {
 		group: {
 			model: channels,
 		},
+	}
+	// Mirror InitChannelCache's name index so channel-name addressing tests
+	// exercise the same lookup path production uses.
+	name2channel = make(map[string][]*Channel)
+	for _, ch := range channels {
+		name := strings.TrimSpace(ch.Name)
+		if name != "" {
+			name2channel[name] = append(name2channel[name], ch)
+		}
 	}
 }
 
@@ -141,5 +151,40 @@ func TestCacheGetRandomSatisfiedChannelExcluding_AvoidsExcludedAndCooling(t *tes
 	MarkChannelCooldown(1, time.Now().Add(-time.Second))
 	if ChannelCoolingDown(1) {
 		t.Fatal("expired cooldown must not count as cooling")
+	}
+}
+
+func TestGetChannelByName_CachedPath(t *testing.T) {
+	prev := config.MemoryCacheEnabled
+	config.MemoryCacheEnabled = true
+	defer func() { config.MemoryCacheEnabled = prev }()
+
+	mk := func(id int, name, group string) *Channel {
+		p := int64(0)
+		g := group
+		return &Channel{Id: id, Name: name, Group: g, Priority: &p}
+	}
+	seedChannelCacheForTest("default", "m", []*Channel{
+		mk(1, "volc-1", "default"),
+		mk(2, "other-pool", "other"),
+	})
+
+	if ch, err := GetChannelByName("volc-1", "default"); err != nil || ch.Id != 1 {
+		t.Fatalf("cached lookup: ch=%v err=%v, want id 1", ch, err)
+	}
+	// Name trims are tolerated (client quirks).
+	if ch, err := GetChannelByName(" volc-1 ", "default"); err != nil || ch.Id != 1 {
+		t.Fatalf("trimmed lookup: ch=%v err=%v", ch, err)
+	}
+	// Group must match: same name in another group is invisible.
+	if _, err := GetChannelByName("other-pool", "default"); err == nil {
+		t.Fatal("channel of another group must not resolve")
+	}
+	if ch, err := GetChannelByName("other-pool", "other"); err != nil || ch.Id != 2 {
+		t.Fatalf("cross-group: ch=%v err=%v", ch, err)
+	}
+	// Unknown names error out.
+	if _, err := GetChannelByName("nope", "default"); err == nil {
+		t.Fatal("unknown name must error")
 	}
 }
