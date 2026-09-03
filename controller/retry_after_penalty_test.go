@@ -45,3 +45,29 @@ func TestMarkChannelPenalty_HonorsRetryAfter(t *testing.T) {
 		}
 	})
 }
+
+// TestUpstreamQuirk400_VolcPartialMissing pins the volc workaround: ark's
+// Responses endpoint intermittently returns a bogus 400 about a "partial"
+// parameter that is not part of the OpenAI spec. The relay must treat it as
+// retryable so failover reaches a healthy channel.
+func TestUpstreamQuirk400_VolcPartialMissing(t *testing.T) {
+	mk := func(msg string, status int) *relaymodel.ErrorWithStatusCode {
+		return &relaymodel.ErrorWithStatusCode{
+			StatusCode: status,
+			Error:      relaymodel.Error{Message: msg},
+		}
+	}
+
+	if !upstreamQuirk400(mk("The request failed because it is missing `partial` parameter", http.StatusBadRequest)) {
+		t.Fatal("volc partial-missing 400 must be retryable")
+	}
+	if upstreamQuirk400(mk("invalid model name", http.StatusBadRequest)) {
+		t.Fatal("genuine 400 must stay non-retryable")
+	}
+	if upstreamQuirk400(mk("The request failed because it is missing `partial` parameter", 200)) {
+		t.Fatal("only 400 qualifies")
+	}
+	if upstreamQuirk400(nil) {
+		t.Fatal("nil error must not panic or qualify")
+	}
+}
