@@ -68,6 +68,12 @@ func chooseDB(envName string) (*gorm.DB, error) {
 	dsn := os.Getenv(envName)
 
 	switch {
+	case strings.HasPrefix(dsn, "sqlite://"):
+		// A dedicated SQLite file — the config/log DB split. Logs churn
+		// (retention deletes, high-volume inserts) can no longer corrupt
+		// or lock the config database, and the config file stays small
+		// enough to sync across the fleet as a unit.
+		return openSQLiteFile(strings.TrimPrefix(dsn, "sqlite://"))
 	case strings.HasPrefix(dsn, "postgres://"):
 		// Use PostgreSQL
 		return openPostgreSQL(dsn)
@@ -88,6 +94,18 @@ func openPostgreSQL(dsn string) (*gorm.DB, error) {
 		PreferSimpleProtocol: true, // disables implicit prepared statement usage
 	}), &gorm.Config{
 		PrepareStmt: true, // precompile SQL
+	})
+}
+
+
+// openSQLiteFile opens a dedicated SQLite file with the same durability
+// settings as the primary database (busy timeout + WAL).
+func openSQLiteFile(path string) (*gorm.DB, error) {
+	common.UsingSQLite = true
+	logger.SysLog("using SQLite file as database: " + path)
+	dsn := fmt.Sprintf("%s?_busy_timeout=%d&_journal_mode=WAL", path, common.SQLiteBusyTimeout)
+	return gorm.Open(sqlite.Open(dsn), &gorm.Config{
+		PrepareStmt: true,
 	})
 }
 
