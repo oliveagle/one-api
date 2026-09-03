@@ -32,9 +32,9 @@
 | 3 | 429 全局冷却在 nodes 端点不可见 | pin.go CoolingDown 只读粘性 store | ✅ 完成 |
 | 4 | wire 不匹配 503 误伤粘性冷却 | relay.go shouldRetry 分支无差别 router.Fail | ✅ 完成 |
 | 5 | Retry-After 头纳入 429 惩罚 | markChannelPenalty 只解析 body 文案 | ✅ 完成（Error.RetryAfterMs + Retry-After 头解析 + 惩罚采用） |
-| 6 | 渠道名寻址 DB 直查（无缓存） | GetChannelByName/ChannelAddressedModels | 📋 后续（低频路径，非稳定性问题） |
-| 7 | 四台 SQLite 手工同步 → rqlite 集群 | 每轮部署的 DB 同步摩擦 | 📋 依赖 rqlite 收尾（见上） |
-| 8 | token 级 RPM 限流 | 只有 quota 无频率限制 | 📋 后续 |
+| 6 | 渠道名寻址 DB 直查（无缓存） | GetChannelByName/ChannelAddressedModels | ✅ 完成（InitChannelCache 建 name→channels 索引；缓存关闭时回退 DB；单测含裁剪/跨组/未知名） |
+| 7 | 四台 SQLite 手工同步 → rqlite 集群 | 每轮部署的 DB 同步摩擦 | 🔍 已诊断：重启换 node-id 时仅写 peers.json 无法重写已提交 raft 配置（旧 voter 无法达法定人数→无限选举）；需显式 raft.RecoverCluster 或持久化 node-id，属 WIP 设计收尾 |
+| 8 | token 级 RPM 限流 | 只有 quota 无频率限制 | ✅ 完成（Token.RPMLimit + 滑动窗口 + 429/Retry-After/token_rpm_exceeded；单测+mock 栈集成测试） |
 
 ## 测试要求
 
@@ -50,3 +50,18 @@
   ratio 全局表泄漏 ×4、observability 顺序依赖 ×1
 - 新增测试：WAL pragma、retry-after 解析/捕获/惩罚三层、nodes 全局冷却
   可见性、wire-mismatch 不粘性冷却（含故障转移 + 后续请求）
+
+
+## 推进记录（2026-09-03 第二轮）
+
+- #6 渠道名寻址缓存：`name2channel` 索引随 InitChannelCache 重建
+  （SYNC_FREQUENCY 周期），MemoryCache 关闭时回退 DB 直查；
+  `ChannelAddressedModels` 同步走缓存。TestGetChannelByName_CachedPath
+  钉住缓存路径/名字裁剪/跨组隔离/未知名错误。
+- #8 token RPM 限流：`Token.RPMLimit`（0=不限，默认）+ 进程内滑动窗口
+  （被拒请求不计数）；超限 429 + Retry-After + `token_rpm_exceeded`。
+  单测三例（窗口滑动/零禁用/令牌隔离）+ mock 栈集成两例
+  （限额触发/零禁用），测试注入时钟可时间旅行。
+- #7 rqlite：两个失败测试的根因已定位（见清单行），修复属 WIP 设计
+  收尾，未动用户未提交代码。
+- 全套 `-race -count=2` 回归 + 干净检出复跑。

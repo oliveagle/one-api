@@ -89,6 +89,9 @@ type mockStackOptions struct {
 	// modelMapping seeds the channel's model_mapping JSON (used by the
 	// channel-addressing chain-mapping test).
 	modelMapping string
+	// tokenRPM seeds the token's rpm_limit (per-token request-per-minute
+	// cap, enforced in TokenAuth by the sliding-window limiter).
+	tokenRPM int
 }
 
 // setupMockRelayStack is the convenience wrapper for chat-only tests
@@ -111,6 +114,8 @@ func setupMockRelayStackWithOptions(t *testing.T, opts mockStackOptions) *gin.En
 	// clean 429-penalty registry so cooldown tests don't bleed into each other.
 	model.ResetChannelCooldowns()
 	t.Cleanup(model.ResetChannelCooldowns)
+	middleware.ResetRPMLimiter()
+	t.Cleanup(middleware.ResetRPMLimiter)
 	testutil.DisableRedis(t)
 	gormDB := testutil.NewMockDBForCommon(t)
 	model.DB = gormDB
@@ -156,6 +161,7 @@ func setupMockRelayStackWithOptions(t *testing.T, opts mockStackOptions) *gin.En
 		ExpiredTime:    -1,
 		Name:           "mock-token",
 		Subnet:         &emptySubnet,
+		RPMLimit:       opts.tokenRPM,
 	}
 	if err := model.DB.Create(token).Error; err != nil {
 		t.Fatalf("seed token: %v", err)

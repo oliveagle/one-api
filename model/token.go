@@ -34,6 +34,9 @@ type Token struct {
 	UsedQuota      int64   `json:"used_quota" gorm:"bigint;default:0"` // used quota
 	Models         *string `json:"models" gorm:"type:text"`            // allowed models
 	Subnet         *string `json:"subnet" gorm:"default:''"`           // allowed subnet
+	// RPMLimit caps relay requests per minute for this token; 0 disables
+	// the cap (the default). Enforced by a sliding window in TokenAuth.
+	RPMLimit int `json:"rpm_limit" gorm:"int;default:0"`
 }
 
 func GetAllUserTokens(userId int, startIdx int, num int, order string) ([]*Token, error) {

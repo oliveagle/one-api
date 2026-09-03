@@ -18,14 +18,17 @@ const (
 	// channel-name addressing (middleware.Distribute); merged into
 	// ctxkey.ModelMapping by SetupContextForSelectedChannel.
 	ModelMappingOverride = "model_mapping_override"
-	ChannelName       = "channel_name"
-	TokenId           = "token_id"
-	TokenName         = "token_name"
-	BaseURL           = "base_url"
-	AvailableModels   = "available_models"
-	KeyRequestBody    = "key_request_body"
-	SystemPrompt      = "system_prompt"
-	Headers           = "headers"
-	SessionKey             = "session_key"
-	SessionSource          = "session_source"
+	ChannelName          = "channel_name"
+	TokenId              = "token_id"
+	// TokenRPMLimit carries the token's per-minute relay request cap from
+	// TokenAuth to the RPM middleware.
+	TokenRPMLimit   = "token_rpm_limit"
+	TokenName       = "token_name"
+	BaseURL         = "base_url"
+	AvailableModels = "available_models"
+	KeyRequestBody  = "key_request_body"
+	SystemPrompt    = "system_prompt"
+	Headers         = "headers"
+	SessionKey      = "session_key"
+	SessionSource   = "session_source"
 )
