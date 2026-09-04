@@ -211,11 +211,14 @@ func InitChannelCache() {
 		}
 	}
 
-	// sort by priority
+	// sort by routing priority: pay_as_you_go channels (RoutingPriority
+	// = priority - 1) naturally sort one tier below plan channels at the
+	// same configured priority, so randomTieredPick partitions them out
+	// of the first-choice tier.
 	for group, model2channels := range newGroup2model2channels {
 		for model, channels := range model2channels {
 			sort.Slice(channels, func(i, j int) bool {
-				return channels[i].GetPriority() > channels[j].GetPriority()
+				return channels[i].RoutingPriority() > channels[j].RoutingPriority()
 			})
 			newGroup2model2channels[group][model] = channels
 		}
@@ -257,9 +260,9 @@ func CacheGetRandomSatisfiedChannel(group string, model string, ignoreFirstPrior
 // they own (or the cache's slice read-only); the picker never mutates it.
 func randomTieredPick(channels []*Channel, ignoreFirstPriority bool) *Channel {
 	endIdx := len(channels)
-	firstPriority := channels[0].GetPriority()
+	firstPriority := channels[0].RoutingPriority()
 	for i := range channels {
-		if channels[i].GetPriority() != firstPriority {
+		if channels[i].RoutingPriority() != firstPriority {
 			endIdx = i
 			break
 		}

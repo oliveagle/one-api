@@ -1,6 +1,7 @@
 package model
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -186,5 +187,129 @@ func TestGetChannelByName_CachedPath(t *testing.T) {
 	// Unknown names error out.
 	if _, err := GetChannelByName("nope", "default"); err == nil {
 		t.Fatal("unknown name must error")
+	}
+}
+
+// TestBillingModeRouting pins the cost-tier routing contract: plan channels
+// form the first-choice tier, pay_as_you_go channels drop exactly one tier
+// below their configured priority, and the retry path (ignoreFirstPriority)
+// reaches them.
+func TestBillingModeRouting(t *testing.T) {
+	prev := config.MemoryCacheEnabled
+	config.MemoryCacheEnabled = true
+	defer func() { config.MemoryCacheEnabled = prev }()
+
+	mk := func(id int, name, billingMode string, priority int64) *Channel {
+		p := priority
+		cfg := fmt.Sprintf(`{"billing_mode":%q}`, billingMode)
+		return &Channel{Id: id, Name: name, Priority: &p, Config: cfg}
+	}
+
+	// Same model served by two plan + two pay_as_you_go channels.
+	seedChannelCacheForTest("default", "m", []*Channel{
+		mk(1, "plan-a", "plan", 0),
+		mk(2, "plan-b", "plan", 0),
+		mk(3, "payg-a", "pay_as_you_go", 0),
+		mk(4, "payg-b", "pay_as_you_go", 0),
+	})
+
+	// First-choice selection must never land on a pay_as_you_go channel.
+	for i := 0; i < 100; i++ {
+		ch, err := CacheGetRandomSatisfiedChannel("default", "m", false)
+		if err != nil {
+			t.Fatalf("primary pick: %v", err)
+		}
+		if ch.Id == 3 || ch.Id == 4 {
+			t.Fatalf("primary pick hit pay_as_you_go channel %d; want plan-only", ch.Id)
+		}
+	}
+
+	// Retry (ignoreFirstPriority) must reach the pay_as_you_go tier.
+	seenPayg := false
+	for i := 0; i < 50; i++ {
+		ch, err := CacheGetRandomSatisfiedChannel("default", "m", true)
+		if err != nil {
+			t.Fatalf("retry pick: %v", err)
+		}
+		if ch.Id == 3 || ch.Id == 4 {
+			seenPayg = true
+		}
+	}
+	if !seenPayg {
+		t.Fatal("retry path never reached a pay_as_you_go channel")
+	}
+
+	// Default (no billing_mode set) = plan tier.
+	seedChannelCacheForTest("default", "m", []*Channel{
+		mk(1, "plan-a", "plan", 0),
+		{Id: 5, Name: "default-mode", Priority: func() *int64 { p := int64(0); return &p }()},
+	})
+	ch, _ := CacheGetRandomSatisfiedChannel("default", "m", false)
+	if ch == nil {
+		t.Fatal("pick failed")
+	}
+	// Both should be in tier 0 (default mode = plan).
+	for i := 0; i < 20; i++ {
+		ch, err := CacheGetRandomSatisfiedChannel("default", "m", false)
+		if err != nil {
+			t.Fatalf("pick: %v", err)
+		}
+		if ch.Id != 1 && ch.Id != 5 {
+			t.Fatalf("unexpected channel %d; want 1 or 5 (both plan tier)", ch.Id)
+		}
+	}
+
+	// Only pay_as_you_go serves the model → primary picks it (no plan
+	// alternative exists, so the tier boundary doesn't help).
+	seedChannelCacheForTest("default", "m2", []*Channel{
+		mk(6, "only-payg", "pay_as_you_go", 0),
+	})
+	ch, err := CacheGetRandomSatisfiedChannel("default", "m2", false)
+	if err != nil || ch == nil {
+		t.Fatalf("only-payg model should still be servable: %v", err)
+	}
+	if ch.Id != 6 {
+		t.Fatalf("want channel 6, got %d", ch.Id)
+	}
+}
+
+// TestBillingModeRouting_ExplicitPriorityInteraction pins that billing-mode
+// demotion composes with explicit priorities: a pay_as_you_go channel at
+// priority 10 (effective 9) still outranks a plan channel at priority 0
+// (effective 0) — the demotion is relative, not absolute.
+func TestBillingModeRouting_ExplicitPriorityInteraction(t *testing.T) {
+	prev := config.MemoryCacheEnabled
+	config.MemoryCacheEnabled = true
+	defer func() { config.MemoryCacheEnabled = prev }()
+
+	mk := func(id int, name, billingMode string, priority int64) *Channel {
+		p := priority
+		cfg := fmt.Sprintf(`{"billing_mode":%q}`, billingMode)
+		return &Channel{Id: id, Name: name, Priority: &p, Config: cfg}
+	}
+
+	seedChannelCacheForTest("g", "m", []*Channel{
+		mk(1, "payg-high", "pay_as_you_go", 10), // effective 9
+		mk(2, "plan-low", "plan", 0),            // effective 0
+	})
+
+	// Primary pick should always hit the higher effective priority (1).
+	for i := 0; i < 50; i++ {
+		ch, err := CacheGetRandomSatisfiedChannel("g", "m", false)
+		if err != nil {
+			t.Fatalf("pick: %v", err)
+		}
+		if ch.Id != 1 {
+			t.Fatalf("want channel 1 (effective priority 9), got %d", ch.Id)
+		}
+	}
+
+	// ignoreFirstPriority reaches the plan channel.
+	ch, err := CacheGetRandomSatisfiedChannel("g", "m", true)
+	if err != nil {
+		t.Fatalf("retry pick: %v", err)
+	}
+	if ch.Id != 2 {
+		t.Fatalf("retry should reach channel 2, got %d", ch.Id)
 	}
 }

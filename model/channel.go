@@ -80,6 +80,30 @@ type ChannelConfig struct {
 	// codex /model) — select a specific channel. "name/model" addresses
 	// any other model from the channel's list. See middleware.Distribute.
 	DefaultModel string `json:"default_model,omitempty"`
+	// BillingMode routes traffic by cost tier: "plan" (default, fixed-rate
+	// or free — first routing tier) vs "pay_as_you_go" (metered — demoted
+	// one priority tier so the router only reaches them when every plan
+	// channel has failed).
+	BillingMode string `json:"billing_mode,omitempty"`
+}
+
+const (
+	BillingModePlan       = "plan"
+	BillingModePayAsYouGo = "pay_as_you_go"
+)
+
+// RoutingPriority returns the effective priority for routing: pay_as_you_go
+// channels drop one tier below plan channels at the same configured
+// priority, so the priority-tier partition in randomTieredPick naturally
+// sends first-choice traffic to plan channels and only reaches the metered
+// ones on retry (ignoreFirstPriority) or when no plan channel serves the
+// model.
+func (channel *Channel) RoutingPriority() int64 {
+	base := channel.GetPriority()
+	if cfg, err := channel.LoadConfig(); err == nil && cfg.BillingMode == BillingModePayAsYouGo {
+		return base - 1
+	}
+	return base
 }
 
 // GetChannelByName returns the enabled channel whose name matches exactly
