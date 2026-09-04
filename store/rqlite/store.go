@@ -522,6 +522,14 @@ func openStoreOnce(ctx context.Context, opts *Options) (*EmbeddedStore, error) {
 		es.EnsureFullSnapshotMarker()
 		logf("rqlite: clean-restart: db restored and snapshotted")
 	}
+	// Multi-node leader: start the join HTTP API so followers can join.
+	// The API listens on raft_port+1.
+	if opts.JoinAddr == "" && opts.RaftAddr != "127.0.0.1:0" {
+		if err := es.ServeJoinHTTP(); err != nil {
+			logf("rqlite: join API failed to start: %v", err)
+		}
+	}
+
 	// Multi-node: join an existing cluster via the leader's raft address.
 	if opts.JoinAddr != "" {
 		// The join API listens on raft_port+1 on the leader (ServeJoinHTTP).
