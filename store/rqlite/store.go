@@ -19,6 +19,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -59,6 +60,7 @@ type EmbeddedStore struct {
 	fullNeededPath string
 	closeMu        sync.Mutex
 	closed         bool
+	joinListener   net.Listener
 }
 
 // ErrStoreClosed is returned by request paths after Close.
@@ -184,6 +186,63 @@ func joinCluster(leaderAddr, nodeID, nodeAddr string) error {
 		return fmt.Errorf("join returned %d: %s", resp.StatusCode, string(b))
 	}
 	return nil
+}
+
+// ServeJoinHTTP starts a minimal HTTP server on the store's raft address
+// that handles POST /join for cluster peers. Call this on the LEADER node
+// to accept follower joins. The server runs until the store closes.
+func (es *EmbeddedStore) ServeJoinHTTP() error {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/join", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "POST required", http.StatusMethodNotAllowed)
+			return
+		}
+		var jr struct {
+			Id      string `json:"id"`
+			Address string `json:"address"`
+			Voter   bool   `json:"voter"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&jr); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := es.store.Join(&proto.JoinRequest{
+			Id:      jr.Id,
+			Address: jr.Address,
+			Voter:   jr.Voter,
+		}); err != nil {
+			logf("rqlite: join rejected: %v", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		logf("rqlite: node %s at %s joined cluster", jr.Id, jr.Address)
+		w.WriteHeader(http.StatusOK)
+	})
+
+	// Listen on the same port as raft (the mux binds it, so we use a
+	// separate listener on a companion port). For simplicity, use the
+	// raft port + 1.
+	raftPort := ly_Port(es)
+	joinAddr := fmt.Sprintf("127.0.0.1:%d", raftPort+1)
+	ln, err := net.Listen("tcp", joinAddr)
+	if err != nil {
+		return fmt.Errorf("rqlite: join listener on %s: %w", joinAddr, err)
+	}
+	es.joinListener = ln
+	go func() {
+		_ = http.Serve(ln, mux)
+	}()
+	logf("rqlite: join API listening on %s", joinAddr)
+	return nil
+}
+
+// ly_Port extracts the numeric port from the store's raft layer address.
+func ly_Port(es *EmbeddedStore) int {
+	addr := es.ly.Addr().String()
+	_, portStr, _ := net.SplitHostPort(addr)
+	port, _ := strconv.Atoi(portStr)
+	return port
 }
 
 func stableRaftAddr(dir string) string {
