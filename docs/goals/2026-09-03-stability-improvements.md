@@ -11,7 +11,23 @@
 - 实证：Mac 上 1 天窗口真实删除 **154,053 行**（15.8 万 → 4,412）
 - 计费安全：quota 结算在 `User.UsedQuota`，logs 纯历史
 
-### rqlite 分布式 —— 状态澄清（未完成，未应用）
+### rqlite 嵌入式重启 —— ✅ 已修复（08aa824）
+
+三个交互 bug 导致重启后数据丢失：
+1. peers.json 触发的 RecoverNode 删除 clean-snapshot marker → 空快照覆盖 db.sqlite
+2. WAL 文件（Direct() 写入的数据）在 store 打开前被删除 → 数据丢失
+3. 崩溃后 raft listener 残留占住端口 → 重启绑不上
+
+修复策略（clean-restart）：
+- 重启时：WAL checkpoint → 保存 db.sqlite → 清除 raft 状态 → 以新节点启动
+  → 恢复 db → 全量快照。确定性，完全绕开恢复与保留的冲突。
+- rqlite 子模块 patch：RecoverNode 后恢复 clean-snapshot marker
+- raft 地址占用回退：优先用持久化地址，被占则回退临时端口
+- 节点身份持久化：node-id + raft-addr 文件，稳定端口从数据目录派生
+
+全部 6 个测试通过。**下一步：多节点 raft 集群**。
+
+### rqlite 分布式 —— 多节点集群（待实现）
 工作区未提交 WIP（ADR-0004 + store/rqlite/ + cmd/migrate-rqlite）：
 - ✅ 编译通过；单机内嵌形态（RQLITE_DIR 进程内 raft+SQLite）基本完成
 - ❌ 2 个崩溃恢复测试失败：TestCleanMarkerPreservesDB /
