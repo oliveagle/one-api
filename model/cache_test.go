@@ -313,3 +313,49 @@ func TestBillingModeRouting_ExplicitPriorityInteraction(t *testing.T) {
 		t.Fatalf("retry should reach channel 2, got %d", ch.Id)
 	}
 }
+
+// TestPicker_CoolingChannelBeatsExcluded pins the three-tier preference:
+// a channel that is cooling (soft penalty from a previous request) is still
+// a better retry target than a channel that already failed in THIS request
+// (hard exclude). Without this, the relay could pick the same failed
+// channel twice when all healthy alternatives happen to be cooling.
+func TestPicker_CoolingChannelBeatsExcluded(t *testing.T) {
+	prev := config.MemoryCacheEnabled
+	config.MemoryCacheEnabled = true
+	defer func() { config.MemoryCacheEnabled = prev }()
+	ResetChannelCooldowns()
+	t.Cleanup(ResetChannelCooldowns)
+
+	mk := func(id int) *Channel {
+		p := int64(0)
+		return &Channel{Id: id, Name: "ch", Priority: &p}
+	}
+	// Pool: ch1 (excluded), ch2 (excluded), ch3 (cooling), ch4 (cooling)
+	seedChannelCacheForTest("g", "m", []*Channel{mk(1), mk(2), mk(3), mk(4)})
+	MarkChannelCooldown(3, time.Now().Add(time.Minute))
+	MarkChannelCooldown(4, time.Now().Add(time.Minute))
+
+	exclude := map[int]bool{1: true, 2: true}
+
+	// The picker must return ch3 or ch4 (cooling but NOT excluded), never
+	// ch1 or ch2 (excluded).
+	for i := 0; i < 50; i++ {
+		ch, err := CacheGetRandomSatisfiedChannelExcluding("g", "m", false, exclude)
+		if err != nil {
+			t.Fatalf("pick: %v", err)
+		}
+		if ch.Id == 1 || ch.Id == 2 {
+			t.Fatalf("picked excluded channel %d; want 3 or 4 (cooling but untried)", ch.Id)
+		}
+	}
+
+	// Everything excluded → graceful fallback returns SOMETHING.
+	excludeAll := map[int]bool{1: true, 2: true, 3: true, 4: true}
+	ch, err := CacheGetRandomSatisfiedChannelExcluding("g", "m", false, excludeAll)
+	if err != nil {
+		t.Fatalf("all-excluded fallback should still return a channel: %v", err)
+	}
+	if ch == nil || ch.Id < 1 || ch.Id > 4 {
+		t.Fatalf("fallback returned invalid channel: %v", ch)
+	}
+}
