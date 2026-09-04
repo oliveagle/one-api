@@ -1,25 +1,32 @@
 package model
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
+	"os"
+	"strings"
+	"time"
+
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/env"
 	"github.com/songquanpeng/one-api/common/helper"
 	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/common/random"
+	"github.com/songquanpeng/one-api/store/rqlite"
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
-	"os"
-	"strings"
-	"time"
 )
 
 var DB *gorm.DB
 var LOG_DB *gorm.DB
+
+// rqliteHandles tracks embedded RQLite stores opened by this process so
+// CloseDB can shut them down cleanly.
+var rqliteHandles []*rqlite.EmbeddedStore
 
 func CreateRootAccountIfNeed() error {
 	var user User
@@ -68,6 +75,9 @@ func chooseDB(envName string) (*gorm.DB, error) {
 	dsn := os.Getenv(envName)
 
 	switch {
+	case strings.HasPrefix(dsn, rqlite.DSNPrefix):
+		// Use embedded RQLite (ADR-0004)
+		return openRQLite(dsn)
 	case strings.HasPrefix(dsn, "sqlite://"):
 		// A dedicated SQLite file — the config/log DB split. Logs churn
 		// (retention deletes, high-volume inserts) can no longer corrupt
@@ -86,6 +96,23 @@ func chooseDB(envName string) (*gorm.DB, error) {
 	}
 }
 
+// openRQLite boots the embedded single-node RQLite store and returns a
+// GORM handle over its database/sql driver (ADR-0004 D1/D2/D6).
+func openRQLite(dsn string) (*gorm.DB, error) {
+	opts, err := rqlite.ParseDSN(dsn)
+	if err != nil {
+		return nil, err
+	}
+	es, err := rqlite.OpenStore(context.Background(), opts)
+	if err != nil {
+		return nil, err
+	}
+	logger.SysLogf("using embedded RQLite as database (dir %s, node %s)", es.DataDir(), opts.NodeID)
+	common.UsingRQLite = true
+	rqliteHandles = append(rqliteHandles, es)
+	return rqlite.OpenGorm()
+}
+
 func openPostgreSQL(dsn string) (*gorm.DB, error) {
 	logger.SysLog("using PostgreSQL as database")
 	common.UsingPostgreSQL = true
@@ -96,7 +123,6 @@ func openPostgreSQL(dsn string) (*gorm.DB, error) {
 		PrepareStmt: true, // precompile SQL
 	})
 }
-
 
 // openSQLiteFile opens a dedicated SQLite file with the same durability
 // settings as the primary database (busy timeout + WAL).
@@ -118,6 +144,15 @@ func openMySQL(dsn string) (*gorm.DB, error) {
 }
 
 func openSQLite() (*gorm.DB, error) {
+	// If an embedded RQLite store was booted (RQLITE_DIR set in main.go),
+	// route GORM through the store's direct handle instead of opening a
+	// separate file. This keeps a single source of truth for writes
+	// (ADR-0004 D1/D2).
+	if rqlite.IsActive() {
+		logger.SysLog("using embedded RQLite store as database (RQLITE_DIR active)")
+		common.UsingRQLite = true
+		return rqlite.OpenGorm()
+	}
 	logger.SysLog("SQL_DSN not set, using SQLite as database")
 	common.UsingSQLite = true
 	dsn := fmt.Sprintf("%s?_busy_timeout=%d&_journal_mode=WAL", common.SQLitePath, common.SQLiteBusyTimeout)
@@ -159,6 +194,13 @@ func InitDB() {
 func migrateDB() error {
 	if DB == nil {
 		return fmt.Errorf("migrateDB: DB is not initialised")
+	}
+	// RQLite followers skip schema migration: tables arrive via raft
+	// replication from the leader. Running DDL on a follower fails with
+	// "not leader" because writes must go through consensus.
+	if rqlite.IsActive() && !rqlite.IsLeader() {
+		logger.SysLog("rqlite follower: skipping schema migration (tables arrive via replication)")
+		return nil
 	}
 	return AutoMigrateAll(DB)
 }
@@ -248,5 +290,13 @@ func CloseDB() error {
 			return err
 		}
 	}
-	return closeDB(DB)
+	err := closeDB(DB)
+	// Shut down embedded RQLite stores (raft + sqlite + listeners).
+	for _, es := range rqliteHandles {
+		if cerr := es.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+	}
+	rqliteHandles = nil
+	return err
 }
