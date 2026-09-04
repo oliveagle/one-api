@@ -288,10 +288,13 @@ var resetAtRe = regexp.MustCompile(`reset (?:at|on)\s+([0-9]{4}-[0-9]{2}-[0-9]{2
 const (
 	// quotaCooldownFallback applies when the upstream names no reset time.
 	quotaCooldownFallback = 15 * time.Minute
-	// quotaCooldownMax caps quota penalties: skipping a channel until a
-	// monthly reset on the strength of one 429 is too aggressive — an hourly
-	// re-probe costs one rejected request and self-heals the pool.
-	quotaCooldownMax = 4 * time.Hour
+	// quotaCooldownMax caps quota penalties. Many quota 429s are
+	// short-lived (per-hour quotas, burst limits) — a half-hourly re-probe
+	// costs one rejected request and self-heals the pool, while waiting
+	// longer needlessly sidelines channels that recovered minutes ago.
+	// Long-period quotas (monthly) are handled by the inter-retry backoff
+	// and the deeper 429 retry budget instead.
+	quotaCooldownMax = 30 * time.Minute
 	// rateLimitCooldown applies to plain (non-quota) 429 throttles.
 	rateLimitCooldown = 60 * time.Second
 	// 429RetryBackoff is the pause between retry attempts after a 429.

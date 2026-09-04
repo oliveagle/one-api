@@ -88,7 +88,7 @@ func Test429RetryBudgetDeeper(t *testing.T) {
 	if backoff429 < time.Second {
 		t.Fatalf("backoff429 = %v, want >= 1s (rate-limit windows need time to clear)", backoff429)
 	}
-	if quotaCooldownMax < 2*time.Hour {
-		t.Fatalf("quotaCooldownMax = %v, want >= 2h (monthly quotas don't reset in 1h)", quotaCooldownMax)
+	if quotaCooldownMax > time.Hour || quotaCooldownMax < 10*time.Minute {
+		t.Fatalf("quotaCooldownMax = %v, want 10m..1h (re-probe recovered channels without hot-looping)", quotaCooldownMax)
 	}
 }
