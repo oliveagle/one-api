@@ -73,6 +73,12 @@ func Relay(c *gin.Context) {
 	// Keep them separate: cooldown depends on the former, the retry loop on both.
 	retryable := shouldRetry(c, bizErr.StatusCode) || upstreamQuirk400(bizErr)
 	retryTimes := config.RetryTimes
+	// 429s deserve a deeper retry budget: they are transient by nature and
+	// the back-off between attempts gives the upstream time to recover.
+	// Non-429 errors (5xx etc.) keep the configured budget.
+	if retryable && bizErr.StatusCode == http.StatusTooManyRequests && retryTimes < 6 {
+		retryTimes = 6
+	}
 	if !retryable {
 		logger.Errorf(ctx, "relay error happen, status code is %d, won't retry in this case", bizErr.StatusCode)
 		retryTimes = 0
@@ -137,6 +143,17 @@ func Relay(c *gin.Context) {
 			}
 			markChannelPenalty(channelId, bizErr)
 			go processChannelRelayError(ctx, userId, channelId, channelName, *bizErr)
+			// Back off before the next retry on 429: rate-limit windows are
+			// often sub-second, and an immediate re-dispatch to a different
+			// channel (or the same one after cooldown expiry) succeeds
+			// where an instant retry would just burn another attempt.
+			if bizErr.StatusCode == http.StatusTooManyRequests {
+				select {
+				case <-time.After(backoff429):
+				case <-c.Request.Context().Done():
+					return
+				}
+			}
 		} else {
 			go processChannelRelayError(ctx, userId, channelId, channelName, *bizErr)
 			break
@@ -274,9 +291,13 @@ const (
 	// quotaCooldownMax caps quota penalties: skipping a channel until a
 	// monthly reset on the strength of one 429 is too aggressive — an hourly
 	// re-probe costs one rejected request and self-heals the pool.
-	quotaCooldownMax = 1 * time.Hour
+	quotaCooldownMax = 4 * time.Hour
 	// rateLimitCooldown applies to plain (non-quota) 429 throttles.
 	rateLimitCooldown = 60 * time.Second
+	// 429RetryBackoff is the pause between retry attempts after a 429.
+	// Long enough for a rate-limit window to clear, short enough that
+	// codex doesn't time out (its own timeout is ~30s).
+	backoff429 = 2 * time.Second
 )
 
 var penaltyMu sync.Mutex
