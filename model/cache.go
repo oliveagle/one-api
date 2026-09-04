@@ -288,24 +288,36 @@ func CacheGetRandomSatisfiedChannelExcluding(group string, model string, ignoreF
 	}
 	channelSyncLock.RLock()
 	channels := group2model2channels[group][model]
-	var eligible []*Channel
+	var notExcludedNotCooling []*Channel
+	var notExcluded []*Channel
 	if len(channels) > 0 {
-		eligible = make([]*Channel, 0, len(channels))
+		notExcludedNotCooling = make([]*Channel, 0, len(channels))
+		notExcluded = make([]*Channel, 0, len(channels))
 		for _, ch := range channels {
 			if exclude != nil && exclude[ch.Id] {
 				continue
 			}
-			if ChannelCoolingDown(ch.Id) {
-				continue
+			notExcluded = append(notExcluded, ch)
+			if !ChannelCoolingDown(ch.Id) {
+				notExcludedNotCooling = append(notExcludedNotCooling, ch)
 			}
-			eligible = append(eligible, ch)
 		}
 	}
 	channelSyncLock.RUnlock()
-	if len(eligible) == 0 {
-		return CacheGetRandomSatisfiedChannel(group, model, ignoreFirstPriority)
+	// Preference tiers:
+	// 1. Untried AND not cooling (ideal pick)
+	// 2. Untried but cooling (better than retrying a channel that already
+	//    failed in THIS request — the cooldown is a soft penalty from a
+	//    previous request, the exclude is a hard fact from this one)
+	// 3. Plain random fallback (everything excluded — small pool, degrade
+	//    rather than 503)
+	if len(notExcludedNotCooling) > 0 {
+		return randomTieredPick(notExcludedNotCooling, ignoreFirstPriority), nil
 	}
-	return randomTieredPick(eligible, ignoreFirstPriority), nil
+	if len(notExcluded) > 0 {
+		return randomTieredPick(notExcluded, ignoreFirstPriority), nil
+	}
+	return CacheGetRandomSatisfiedChannel(group, model, ignoreFirstPriority)
 }
 
 // ---------------------------------------------------------------------------
