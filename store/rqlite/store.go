@@ -3,6 +3,10 @@
 package rqlite
 
 import (
+	"net/http"
+
+	"bytes"
+
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -158,6 +162,28 @@ func checkpointWAL(dir string) {
 	} else {
 		logf("rqlite: WAL checkpointed successfully")
 	}
+}
+
+// joinCluster sends a join request to the cluster leader via the rqlite
+// HTTP API (the mux serves both raft and HTTP on the same port).
+func joinCluster(leaderAddr, nodeID, nodeAddr string) error {
+	joinReq := map[string]any{
+		"id":      nodeID,
+		"address": nodeAddr,
+		"voter":   true,
+	}
+	body, _ := json.Marshal(joinReq)
+	url := fmt.Sprintf("http://%s/join", leaderAddr)
+	resp, err := http.Post(url, "application/json", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("POST %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("join returned %d: %s", resp.StatusCode, string(b))
+	}
+	return nil
 }
 
 func stableRaftAddr(dir string) string {
@@ -437,6 +463,17 @@ func openStoreOnce(ctx context.Context, opts *Options) (*EmbeddedStore, error) {
 		es.EnsureFullSnapshotMarker()
 		logf("rqlite: clean-restart: db restored and snapshotted")
 	}
+	// Multi-node: join an existing cluster via the leader's raft address.
+	if opts.JoinAddr != "" {
+		logf("rqlite: joining cluster at %s (node=%s addr=%s)", opts.JoinAddr, opts.NodeID, ly.Addr().String())
+		if err := joinCluster(opts.JoinAddr, opts.NodeID, ly.Addr().String()); err != nil {
+			es.Close()
+			setCurrentStore(nil)
+			return nil, fmt.Errorf("rqlite: join cluster: %w", err)
+		}
+		logf("rqlite: joined cluster successfully")
+	}
+
 	if committed {
 		if empty, err := es.directDBEmpty(); err == nil && empty {
 			logf("rqlite: db is empty after restart")
