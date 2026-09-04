@@ -168,14 +168,14 @@ func checkpointWAL(dir string) {
 
 // joinCluster sends a join request to the cluster leader via the rqlite
 // HTTP API (the mux serves both raft and HTTP on the same port).
-func joinCluster(leaderAddr, nodeID, nodeAddr string) error {
+func joinCluster(joinAPIAddr, nodeID, nodeRaftAddr string) error {
 	joinReq := map[string]any{
 		"id":      nodeID,
-		"address": nodeAddr,
+		"address": nodeRaftAddr,
 		"voter":   true,
 	}
 	body, _ := json.Marshal(joinReq)
-	url := fmt.Sprintf("http://%s/join", leaderAddr)
+	url := fmt.Sprintf("http://%s/join", joinAPIAddr)
 	resp, err := http.Post(url, "application/json", bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("POST %s: %w", url, err)
@@ -524,8 +524,12 @@ func openStoreOnce(ctx context.Context, opts *Options) (*EmbeddedStore, error) {
 	}
 	// Multi-node: join an existing cluster via the leader's raft address.
 	if opts.JoinAddr != "" {
-		logf("rqlite: joining cluster at %s (node=%s addr=%s)", opts.JoinAddr, opts.NodeID, ly.Addr().String())
-		if err := joinCluster(opts.JoinAddr, opts.NodeID, ly.Addr().String()); err != nil {
+		// The join API listens on raft_port+1 on the leader (ServeJoinHTTP).
+		joinHost, joinPortStr, _ := net.SplitHostPort(opts.JoinAddr)
+		joinPort, _ := strconv.Atoi(joinPortStr)
+		joinAPIAddr := fmt.Sprintf("%s:%d", joinHost, joinPort+1)
+		logf("rqlite: joining cluster at %s (raft=%s, node=%s addr=%s)", joinAPIAddr, opts.JoinAddr, opts.NodeID, ly.Addr().String())
+		if err := joinCluster(joinAPIAddr, opts.NodeID, ly.Addr().String()); err != nil {
 			es.Close()
 			setCurrentStore(nil)
 			return nil, fmt.Errorf("rqlite: join cluster: %w", err)
