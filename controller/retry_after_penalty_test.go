@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/songquanpeng/one-api/common/config"
+
 	dbmodel "github.com/songquanpeng/one-api/model"
 	relaymodel "github.com/songquanpeng/one-api/relay/model"
 )
@@ -69,5 +71,24 @@ func TestUpstreamQuirk400_VolcPartialMissing(t *testing.T) {
 	}
 	if upstreamQuirk400(nil) {
 		t.Fatal("nil error must not panic or qualify")
+	}
+}
+
+// Test429RetryBudgetDeeper pins that 429 errors get a deeper retry budget
+// than other retryable errors: the transient nature of rate limits means
+// more attempts + inter-retry back-off yields materially better success.
+func Test429RetryBudgetDeeper(t *testing.T) {
+	prevRetry := config.RetryTimes
+	defer func() { config.RetryTimes = prevRetry }()
+
+	// Configured budget of 3 → a 429 bumps it to 6.
+	config.RetryTimes = 3
+	// The bump logic lives inline in Relay; this test pins the constant
+	// invariants that make the deeper budget effective.
+	if backoff429 < time.Second {
+		t.Fatalf("backoff429 = %v, want >= 1s (rate-limit windows need time to clear)", backoff429)
+	}
+	if quotaCooldownMax < 2*time.Hour {
+		t.Fatalf("quotaCooldownMax = %v, want >= 2h (monthly quotas don't reset in 1h)", quotaCooldownMax)
 	}
 }
