@@ -679,6 +679,15 @@ func (s *EmbeddedStore) execute(ctx context.Context, sqlText string, params []*p
 	return resp[0], resp[0].GetQ() != nil, nil
 }
 
+// IsLeader reports whether this node is the current raft leader.
+// Followers should skip schema migration and rely on replication.
+func (es *EmbeddedStore) IsLeader() bool {
+	if es == nil || es.store == nil {
+		return false
+	}
+	return es.store.IsLeader()
+}
+
 func (s *EmbeddedStore) newConn() *rqliteConn {
 	return &rqliteConn{store: s}
 }
