@@ -15,6 +15,7 @@ import (
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/ctxkey"
 	"github.com/songquanpeng/one-api/common/logger"
+	dbmodel "github.com/songquanpeng/one-api/model"
 	"github.com/songquanpeng/one-api/relay"
 	"github.com/songquanpeng/one-api/relay/adaptor/openai"
 	"github.com/songquanpeng/one-api/relay/billing"
@@ -370,6 +371,10 @@ func forwardResponse(c *gin.Context, resp *http.Response) *relaymodel.ErrorWithS
 // getResponsesRequestBody re-encodes the body only when the model name was
 // rewritten by model_mapping; otherwise the original bytes are forwarded so no
 // field can be lost in a round-trip through our partial struct.
+//
+// Additionally, the channel's reasoning_effort_map (a JSON object in the
+// channel config) rewrites non-standard reasoning effort values the upstream
+// rejects — e.g. vLLM qwen3.8 wants "xhigh" where OpenAI uses "high".
 func getResponsesRequestBody(c *gin.Context, request *ResponsesRequest) (io.Reader, error) {
 	original, err := common.GetRequestBody(c)
 	if err != nil {
@@ -379,16 +384,60 @@ func getResponsesRequestBody(c *gin.Context, request *ResponsesRequest) (io.Read
 	if err := json.Unmarshal(original, &raw); err != nil {
 		return nil, err
 	}
+	changed := false
+
+	// Model rewrite
 	current, _ := json.Marshal(request.Model)
-	if existing, ok := raw["model"]; ok && bytes.Equal(existing, current) {
+	if existing, ok := raw["model"]; !ok || !bytes.Equal(existing, current) {
+		raw["model"] = current
+		changed = true
+	}
+
+	// Reasoning effort rewrite (channel config: {"reasoning_effort_map": {"high":"xhigh"}})
+	if effortMap := reasoningEffortMap(c); len(effortMap) > 0 {
+		if reasoningRaw, ok := raw["reasoning"]; ok {
+			var reasoning struct {
+				Effort string `json:"effort"`
+			}
+			if err := json.Unmarshal(reasoningRaw, &reasoning); err == nil && reasoning.Effort != "" {
+				if mapped, ok := effortMap[reasoning.Effort]; ok && mapped != reasoning.Effort {
+					newReasoning, _ := json.Marshal(map[string]string{"effort": mapped, "summary": "auto"})
+					raw["reasoning"] = newReasoning
+					changed = true
+				}
+			}
+		}
+	}
+
+	if !changed {
 		return bytes.NewReader(original), nil
 	}
-	raw["model"] = current
 	rewritten, err := json.Marshal(raw)
 	if err != nil {
 		return nil, err
 	}
 	return bytes.NewReader(rewritten), nil
+}
+
+// reasoningEffortMap reads the channel's reasoning_effort_map from the gin
+// context config. Returns nil when not configured.
+func reasoningEffortMap(c *gin.Context) map[string]string {
+	cfg, ok := c.Get(ctxkey.Config)
+	if !ok {
+		return nil
+	}
+	channelCfg, ok := cfg.(dbmodel.ChannelConfig)
+	if !ok {
+		return nil
+	}
+	if channelCfg.ReasoningEffortMap == "" {
+		return nil
+	}
+	var m map[string]string
+	if err := json.Unmarshal([]byte(channelCfg.ReasoningEffortMap), &m); err != nil {
+		return nil
+	}
+	return m
 }
 
 // relayResponsesResponse copies the upstream response to the client verbatim and

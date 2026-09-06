@@ -80,6 +80,10 @@ type ChannelConfig struct {
 	// codex /model) — select a specific channel. "name/model" addresses
 	// any other model from the channel's list. See middleware.Distribute.
 	DefaultModel string `json:"default_model,omitempty"`
+	// ReasoningEffortMap rewrites non-standard reasoning effort values the
+	// upstream rejects, e.g. vLLM qwen3.8: {"high":"xhigh"}. The value
+	// is a JSON object string mapped by the Responses passthrough.
+	ReasoningEffortMap string `json:"reasoning_effort_map,omitempty"`
 	// BillingMode routes traffic by cost tier: "plan" (default, fixed-rate
 	// or free — first routing tier) vs "pay_as_you_go" (metered — demoted
 	// one priority tier so the router only reaches them when every plan
