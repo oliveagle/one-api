@@ -13,5 +13,4 @@ services:
       - /mnt/ssd_pool/data/one-api/logs:/app/logs
     environment:
       - SQLITE_PATH=/data/one-api.db
-      - SESSION_SECRET=***REMOVED***
       - TZ=Asia/Shanghai
