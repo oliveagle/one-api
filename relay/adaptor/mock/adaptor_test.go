@@ -463,3 +463,115 @@ func TestConvertRequestNil(t *testing.T) {
 		t.Errorf("ConvertRequest(nil) must error")
 	}
 }
+
+func TestDoRequest_ResponsesPoisonedToolCall(t *testing.T) {
+	// Ground-truth pin: the poisoned behavior emits a function_call whose
+	// arguments JSON is truncated mid-string — byte-identical to what
+	// qwen3.8-27b on vLLM really streamed during the 2026-09-09 incident.
+	c := newCtxWithBehavior(t, "openai-responses-poisoned-tool-call", `{}`)
+	a := &Adaptor{}
+	resp, err := a.DoRequest(c, nil, strings.NewReader(`{"model":"mock-gpt-4o"}`))
+	if err != nil {
+		t.Fatalf("DoRequest: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (real upstreams stream the poison out as a success)", resp.StatusCode)
+	}
+	body := bodyString(t, resp)
+	var env struct {
+		Output []struct {
+			Type      string `json:"type"`
+			Name      string `json:"name"`
+			Arguments string `json:"arguments"`
+		} `json:"output"`
+	}
+	if err := json.Unmarshal([]byte(body), &env); err != nil {
+		t.Fatalf("body not JSON: %v\n%s", err, body)
+	}
+	if len(env.Output) != 1 || env.Output[0].Type != "function_call" {
+		t.Fatalf("expected a single function_call output, got %s", body)
+	}
+	if env.Output[0].Arguments != PoisonedToolCallArguments {
+		t.Errorf("arguments = %q, want the verbatim poison fixture", env.Output[0].Arguments)
+	}
+	// The fixture itself must be malformed JSON — that is the point. If
+	// someone ever "fixes" the fixture, the sanitizer tests below lose
+	// their meaning.
+	if json.Valid([]byte(PoisonedToolCallArguments)) {
+		t.Errorf("PoisonedToolCallArguments must NOT be valid JSON")
+	}
+}
+
+func TestValidateResponsesInputToolCalls(t *testing.T) {
+	cases := []struct {
+		name    string
+		body    string
+		wantErr bool
+	}{
+		{
+			name:    "valid arguments accepted",
+			body:    `{"input":[{"type":"function_call","call_id":"c1","name":"shell","arguments":"{\"cmd\":[\"ls\"]}"},{"type":"function_call_output","call_id":"c1","output":"ok"}]}`,
+			wantErr: false,
+		},
+		{
+			name:    "string input accepted (nothing to validate)",
+			body:    `{"input":"plain prompt"}`,
+			wantErr: false,
+		},
+		{
+			name:    "truncated arguments rejected",
+			body:    `{"input":[{"type":"function_call","call_id":"c1","name":"exec_command","arguments":"{\"cmd\": \"cd /tmp && ls -la"}]}`,
+			wantErr: true,
+		},
+		{
+			name:    "non-JSON literal rejected (the write_stdin 'none' case)",
+			body:    `{"input":[{"type":"function_call","call_id":"c1","name":"write_stdin","arguments":"{\"session_id\": none}"}]}`,
+			wantErr: true,
+		},
+		{
+			name:    "missing arguments rejected (ark's literal complaint)",
+			body:    `{"input":[{"type":"function_call","call_id":"c1","name":"shell"}]}`,
+			wantErr: true,
+		},
+		{
+			name:    "empty-string arguments rejected",
+			body:    `{"input":[{"type":"function_call","call_id":"c1","name":"shell","arguments":""}]}`,
+			wantErr: true,
+		},
+		{
+			name:    "custom_tool_call freeform input is NOT json-validated",
+			body:    `{"input":[{"type":"custom_tool_call","call_id":"c1","name":"apply_patch","input":"*** Begin Patch\n*** plain text"}]}`,
+			wantErr: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := validateResponsesInputToolCalls([]byte(tc.body))
+			if tc.wantErr && got == nil {
+				t.Errorf("expected rejection, got nil (upstream would accept)")
+			}
+			if !tc.wantErr && got != nil {
+				t.Errorf("expected acceptance, got error body: %s", got)
+			}
+			if got != nil {
+				// The rejection must speak ark's dialect — the literal
+				// string that surfaced through the relay during the
+				// incident.
+				var env struct {
+					Error struct {
+						Message string `json:"message"`
+						Type    string `json:"type"`
+						Param   string `json:"param"`
+						Code    string `json:"code"`
+					} `json:"error"`
+				}
+				if err := json.Unmarshal(got, &env); err != nil {
+					t.Fatalf("rejection body not JSON: %v\n%s", err, got)
+				}
+				if env.Error.Type != "BadRequest" || env.Error.Code != "MissingParameter" || env.Error.Param != "input.arguments" {
+					t.Errorf("rejection is not the ark dialect: %s", got)
+				}
+			}
+		})
+	}
+}

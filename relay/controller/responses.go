@@ -374,7 +374,11 @@ func forwardResponse(c *gin.Context, resp *http.Response) *relaymodel.ErrorWithS
 //
 // Additionally, the channel's reasoning_effort_map (a JSON object in the
 // channel config) rewrites non-standard reasoning effort values the upstream
-// rejects — e.g. vLLM qwen3.8 wants "xhigh" where OpenAI uses "high".
+// rejects — e.g. vLLM qwen3.8 wants "xhigh" where OpenAI uses "high" — and
+// malformed function_call arguments in the input history are repaired in
+// place (see sanitizeResponsesToolCallArgs), which is the one repair that
+// must run even on otherwise byte-for-byte bodies: the request is undeliverable
+// without it.
 func getResponsesRequestBody(c *gin.Context, request *ResponsesRequest) (io.Reader, error) {
 	original, err := common.GetRequestBody(c)
 	if err != nil {
@@ -409,6 +413,15 @@ func getResponsesRequestBody(c *gin.Context, request *ResponsesRequest) (io.Read
 		}
 	}
 
+	// Repair poisoned function_call arguments in the input history: every
+	// real upstream validator rejects the whole request otherwise, and
+	// clients replay history each turn, wedging the session on every
+	// channel. See sanitizeResponsesToolCallArgs for the incident record.
+	if sanitizeResponsesToolCallArgs(raw) {
+		changed = true
+		logger.Warnf(c.Request.Context(), "responses: repaired malformed function_call arguments in input history")
+	}
+
 	if !changed {
 		return bytes.NewReader(original), nil
 	}
@@ -417,6 +430,78 @@ func getResponsesRequestBody(c *gin.Context, request *ResponsesRequest) (io.Read
 		return nil, err
 	}
 	return bytes.NewReader(rewritten), nil
+}
+
+// sanitizeResponsesToolCallArgs repairs function_call items in the
+// request's `input` history whose `arguments` payload is missing or not
+// valid JSON. It returns true when any item was repaired.
+//
+// DATA SOURCE: production incidents of 2026-09-09. Upstream models
+// occasionally emit a function_call whose arguments JSON is truncated
+// mid-string (qwen3.8-27b on vLLM: an exec_command call cut off at 178
+// bytes with no closing quote) or carries a non-JSON literal (write_stdin
+// with "session_id": none). Downstream validators then reject the ENTIRE
+// request — vLLM's chat_utils json.loads answers "Unterminated string
+// starting at: line 1 column 9 (char 8)", volcengine ark answers
+// "missing `input.arguments` (MissingParameter)" — and because coding
+// agents replay the full history on every turn, the session is wedged on
+// every channel it is routed to. Replacing the single malformed payload
+// with "{}" turns a permanent 400 into one recoverable turn; the tool
+// output already in history ("failed to parse function arguments: ...")
+// tells the model its call never executed, so it re-issues the call.
+//
+// Healthy requests are untouched: the function returns false and the
+// caller keeps forwarding the original bytes verbatim.
+func sanitizeResponsesToolCallArgs(raw map[string]json.RawMessage) bool {
+	inputRaw, ok := raw["input"]
+	if !ok {
+		return false
+	}
+	var items []json.RawMessage
+	if err := json.Unmarshal(inputRaw, &items); err != nil {
+		// `input` as a plain string (prompt form) or a non-array shape:
+		// nothing to sanitize.
+		return false
+	}
+	repaired := false
+	for i, itemRaw := range items {
+		var probe struct {
+			Type      string  `json:"type"`
+			Arguments *string `json:"arguments"`
+		}
+		if err := json.Unmarshal(itemRaw, &probe); err != nil {
+			continue
+		}
+		// Only function_call items carry JSON-in-a-string arguments;
+		// custom_tool_call.input is freeform text and must NOT be
+		// JSON-validated, and structured action objects are already valid.
+		if probe.Type != "function_call" {
+			continue
+		}
+		if probe.Arguments != nil && json.Valid([]byte(*probe.Arguments)) {
+			continue
+		}
+		var item map[string]json.RawMessage
+		if err := json.Unmarshal(itemRaw, &item); err != nil {
+			continue
+		}
+		item["arguments"] = json.RawMessage(`"{}"`)
+		newItem, err := json.Marshal(item)
+		if err != nil {
+			continue
+		}
+		items[i] = newItem
+		repaired = true
+	}
+	if !repaired {
+		return false
+	}
+	newInput, err := json.Marshal(items)
+	if err != nil {
+		return false
+	}
+	raw["input"] = newInput
+	return true
 }
 
 // reasoningEffortMap reads the channel's reasoning_effort_map from the gin

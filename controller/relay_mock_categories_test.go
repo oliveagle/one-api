@@ -44,6 +44,7 @@ import (
 	"testing"
 
 	"github.com/songquanpeng/one-api/common/config"
+	mockadaptor "github.com/songquanpeng/one-api/relay/adaptor/mock"
 	dbmodel "github.com/songquanpeng/one-api/model"
 	relaymodel "github.com/songquanpeng/one-api/relay/model"
 	"github.com/songquanpeng/one-api/relay/routing"
@@ -138,6 +139,141 @@ func TestCategory1_ResponsesToResponses_Stream(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("stream body missing %q:\n%s", want, out)
 		}
+	}
+}
+
+// ===========================================================================
+// Category 1 — poisoned function_call arguments (upstream glitch shape)
+//
+// DATA SOURCE: 2026-09-09 incident. Upstream models occasionally emit a
+// function_call whose arguments JSON is truncated mid-string (qwen3.8-27b
+// on vLLM, streamed out with HTTP 200) or carries a non-JSON literal.
+// Coding agents replay the full output history on every later request, and
+// every upstream validator then hard-400s the WHOLE request — vLLM's
+// chat_utils json.loads ("Unterminated string starting at: line 1 column 9
+// (char 8)") or volcengine ark ("missing `input.arguments`
+// MissingParameter") — wedging the session on every channel. The relay
+// repairs the single malformed item before forwarding
+// (relayResponsesCreate → sanitizeResponsesToolCallArgs); these tests pin
+// that behavior end-to-end against the mock's strict-input validator.
+// ===========================================================================
+
+// poisonedHistoryInput builds a Responses input array shaped like the real
+// incident: user turn, the model's poisoned function_call, and codex's own
+// parse-failure tool output. args is the (possibly malformed) arguments
+// payload; omitArguments drops the field entirely (ark's literal
+// "missing input.arguments" complaint).
+func poisonedHistoryInput(args string, omitArguments bool) []map[string]any {
+	call := map[string]any{
+		"type":    "function_call",
+		"id":      "fc_1",
+		"call_id": "call_1",
+		"name":    "exec_command",
+	}
+	if !omitArguments {
+		call["arguments"] = args
+	}
+	return []map[string]any{
+		{"type": "message", "role": "user", "content": []map[string]any{
+			{"type": "input_text", "text": "run the jwks check"},
+		}},
+		call,
+		{"type": "function_call_output", "call_id": "call_1",
+			"output": "failed to parse function arguments: EOF while parsing a string at line 1 column 178"},
+	}
+}
+
+func TestCategory1_ResponsesPoisonedToolCall_ForwardedVerbatim(t *testing.T) {
+	// Ground truth (AGENTS.md rule 1): the upstream's poisoned RESPONSE
+	// must reach the client untouched — the relay repairs requests, never
+	// responses. The client (codex) is what records the item into history.
+	r := setupMockRelayStackWithOptions(t, mockStackOptions{
+		supportResponses:       true,
+		registerResponsesRoute: true,
+	})
+	rec := doRelayRequestTo(t, r, "/v1/responses",
+		"Bearer sk-test", "openai-responses-poisoned-tool-call", basicResponsesBody())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (upstreams stream the poison out as a success); body=%s",
+			rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Output []struct {
+			Type      string `json:"type"`
+			Arguments string `json:"arguments"`
+		} `json:"output"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("response not JSON: %v\n%s", err, rec.Body.String())
+	}
+	if len(resp.Output) != 1 || resp.Output[0].Type != "function_call" {
+		t.Fatalf("expected one function_call output, got %s", rec.Body.String())
+	}
+	if resp.Output[0].Arguments != mockadaptor.PoisonedToolCallArguments {
+		t.Errorf("upstream responses must be forwarded verbatim — arguments were mutated:\n got %q\nwant %q",
+			resp.Output[0].Arguments, mockadaptor.PoisonedToolCallArguments)
+	}
+}
+
+func TestCategory1_PoisonedHistoryArguments_SanitizedBeforeUpstream(t *testing.T) {
+	cases := []struct {
+		name string
+		args string
+		omit bool
+	}{
+		{name: "truncated string (the vLLM Unterminated-string incident)", args: mockadaptor.PoisonedToolCallArguments},
+		{name: "invalid JSON literal (write_stdin 'none')", args: `{"session_id": none, "yield_time_ms": 1000}`},
+		{name: "missing arguments (ark MissingParameter)", omit: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := setupMockRelayStackWithOptions(t, mockStackOptions{
+				supportResponses:       true,
+				registerResponsesRoute: true,
+			})
+			body := basicResponsesBody(map[string]any{
+				"input": poisonedHistoryInput(tc.args, tc.omit),
+			})
+			// openai-responses-strict-input rejects any history that still
+			// carries malformed arguments, so a 200 here proves the
+			// sanitizer repaired the item before forwarding. Without the
+			// repair this request 400s on every real upstream and the
+			// session is wedged forever.
+			rec := doRelayRequestTo(t, r, "/v1/responses",
+				"Bearer sk-test", "openai-responses-strict-input", body)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200 (sanitizer must repair the poisoned item); body=%s",
+					rec.Code, rec.Body.String())
+			}
+			var resp map[string]any
+			if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("response not JSON: %v", err)
+			}
+			if obj, _ := resp["object"].(string); obj != "response" {
+				t.Errorf("object = %q, want \"response\"", obj)
+			}
+		})
+	}
+}
+
+func TestCategory1_HealthyToolCallHistory_PassesStrictUpstream(t *testing.T) {
+	// No-false-positive pin: a history whose arguments are all valid JSON
+	// must reach a strict upstream unchanged (200), i.e. the sanitizer is
+	// a no-op on healthy traffic.
+	r := setupMockRelayStackWithOptions(t, mockStackOptions{
+		supportResponses:       true,
+		registerResponsesRoute: true,
+	})
+	input := []map[string]any{
+		{"type": "function_call", "id": "fc_1", "call_id": "call_1", "name": "shell",
+			"arguments": `{"cmd":["ls","-la"]}`},
+		{"type": "function_call_output", "call_id": "call_1", "output": "total 0"},
+	}
+	body := basicResponsesBody(map[string]any{"input": input})
+	rec := doRelayRequestTo(t, r, "/v1/responses",
+		"Bearer sk-test", "openai-responses-strict-input", body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 for healthy history; body=%s", rec.Code, rec.Body.String())
 	}
 }
 

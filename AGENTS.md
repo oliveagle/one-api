@@ -52,9 +52,14 @@ When you add or change how a provider behaves:
   delegates to the OpenAI `Handler`/`StreamHandler` so usage/quota run
   through the real code paths. It **never touches the network**.
 - Accepted behaviors: `openai-chat`, `openai-stream`, `openai-tool-call`,
-  `openai-responses`, `openai-responses-stream`, `error-429`,
-  `error-500`, `error-400`, `empty`. Add new ones when a provider shape
-  isn't covered.
+  `openai-responses`, `openai-responses-stream`,
+  `openai-responses-tool-call`,
+  `openai-responses-poisoned-tool-call` (ground-truth upstream glitch:
+  function_call with truncated arguments JSON),
+  `openai-responses-strict-input` (rejects request histories whose
+  function_call arguments are not valid JSON, using volcengine ark's
+  `MissingParameter input.arguments` dialect), `error-429`, `error-500`,
+  `error-400`, `empty`. Add new ones when a provider shape isn't covered.
 - The integration harness lives in
   `controller/relay_mock_integration_test.go` (`setupMockRelayStack` /
   `setupMockRelayStackWithOptions`). It seeds User+Token+Channel into
@@ -68,6 +73,16 @@ When you add or change how a provider behaves:
   otherwise it refuses with 503 `responses_unsupported_on_channel`
   (retryable, so failover reaches a capable channel). There is NO
   conversion layer anymore — `responses_convert*.go` were deleted.
+  ONE exception to byte-for-byte: `sanitizeResponsesToolCallArgs`
+  repairs function_call items in the request's input history whose
+  arguments are missing or not valid JSON (upstream models emit these
+  with HTTP 200; every real validator then 400s the whole replayed
+  history — vLLM "Unterminated string...", ark "missing
+  `input.arguments`" — wedging the session on every channel). The
+  malformed payload is replaced with `"{}"`; healthy requests stay
+  byte-for-byte. Pinned by `TestCategory1_ResponsesPoisonedToolCall_*`
+  and the `openai-responses-poisoned-tool-call` /
+  `openai-responses-strict-input` mock behaviors.
 - `upstreamSupportsResponses` returns true for
   `config.support_responses`, `config.responses_only`, the
   `OpenAIResponses` channel type (new: upstream serves the Responses

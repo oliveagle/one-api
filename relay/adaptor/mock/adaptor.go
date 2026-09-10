@@ -12,6 +12,14 @@
 //	                       the request has "stream":true)
 //	"openai-stream"       forced SSE stream (ignores the stream flag)
 //	"openai-tool-call"    non-stream response carrying a tool_call
+//	"openai-responses"    native Responses API reply (streams on request)
+//	"openai-responses-stream"  forced Responses SSE stream
+//	"openai-responses-tool-call"  Responses reply with a function_call item
+//	"openai-responses-poisoned-tool-call"  function_call with truncated
+//	                       arguments JSON — the real upstream glitch shape
+//	"openai-responses-strict-input"  400 (ark MissingParameter dialect)
+//	                       unless every function_call in the request's
+//	                       input history carries valid JSON arguments
 //	"error-429"           HTTP 429 + OpenAI rate-limit error envelope
 //	"error-500"           HTTP 500 + OpenAI server-error envelope
 //	"error-400"           HTTP 400 + OpenAI invalid-request envelope
@@ -142,6 +150,25 @@ func (a *Adaptor) DoRequest(c *gin.Context, meta *meta.Meta, requestBody io.Read
 		// message). Mirrors the Responses shape for tool invocation:
 		// output[].type == "function_call" with name + arguments.
 		return newJSONResponse(http.StatusOK, synthesizeResponsesToolCallResponse(modelName)), nil
+	case "openai-responses-poisoned-tool-call":
+		// Ground truth for the poisoned-history incident class: a
+		// function_call whose arguments JSON is TRUNCATED mid-string —
+		// exactly what real upstreams stream out (with HTTP 200!) when
+		// the model/parser glitches. See PoisonedToolCallArguments.
+		return newJSONResponse(http.StatusOK, synthesizeResponsesPoisonedToolCallResponse(modelName)), nil
+	case "openai-responses-strict-input":
+		// Stand-in for the upstream validators that hard-reject request
+		// histories containing malformed function_call arguments (vLLM
+		// chat_utils json.loads; volcengine ark MissingParameter
+		// `input.arguments`). Returns 400 when the invariant is violated,
+		// a normal Responses reply otherwise.
+		if errBody := validateResponsesInputToolCalls(rawBody); errBody != nil {
+			return newJSONResponse(http.StatusBadRequest, errBody), nil
+		}
+		if stream {
+			return newSSEResponse(synthesizeResponsesStream(modelName, cannedReply)), nil
+		}
+		return newJSONResponse(http.StatusOK, synthesizeResponsesResponse(modelName, cannedReply)), nil
 	case "error-429":
 		return newJSONResponse(http.StatusTooManyRequests, synthesizeErrorBody("rate limited by mock", "rate_limit_exceeded")), nil
 	case "error-500":
@@ -475,6 +502,100 @@ func synthesizeResponsesToolCallResponse(modelName string) []byte {
 			"input_tokens":  19,
 			"output_tokens": 7,
 			"total_tokens":  26,
+		},
+	}
+	out, _ := json.Marshal(body)
+	return out
+}
+
+// PoisonedToolCallArguments is the exact arguments payload a real upstream
+// emitted during the 2026-09-09 incident: qwen3.8-27b on vLLM streamed this
+// exec_command tool call truncated mid-string (EOF at 178 bytes — no closing
+// quote, no closing brace). Kept verbatim as the regression fixture; the
+// relay's input sanitizer (relay/controller responses.go) must repair it
+// before any upstream validator sees it.
+const PoisonedToolCallArguments = `{"cmd": "cd /tmp && unset GOROOT && export MOCK_JWKS_KEY=/tmp/sandbox-jwks-key.pem && timeout 3 /tmp/mockd-test jwks 2>&1 | head -10; ls -la /tmp/sandbox-jwks-key.pem 2>/dev/null`
+
+// synthesizeResponsesPoisonedToolCallResponse mirrors
+// synthesizeResponsesToolCallResponse but the function_call's arguments are
+// the truncated PoisonedToolCallArguments string. Real upstreams emit this
+// shape with HTTP 200 — the damage only surfaces when the client replays the
+// item in a later request's input history and a validator rejects it.
+// Behavior: openai-responses-poisoned-tool-call.
+func synthesizeResponsesPoisonedToolCallResponse(modelName string) []byte {
+	body := map[string]any{
+		"id":      "resp_mock",
+		"object":  "response",
+		"created": 1700000000,
+		"model":   modelName,
+		"status":  "completed",
+		"output": []map[string]any{{
+			"type":      "function_call",
+			"id":        "fc_mock",
+			"call_id":   "call_mock",
+			"name":      "exec_command",
+			"arguments": PoisonedToolCallArguments,
+			"status":    "completed",
+		}},
+		"usage": map[string]any{
+			"input_tokens":  19,
+			"output_tokens": 7,
+			"total_tokens":  26,
+		},
+	}
+	out, _ := json.Marshal(body)
+	return out
+}
+
+// validateResponsesInputToolCalls enforces the invariant real upstream
+// validators enforce on a Responses request's input history: every
+// function_call item must carry valid JSON in its arguments string.
+//
+// DATA SOURCE: vLLM does a bare json.loads per item
+// (entrypoints/openai/chat_utils.py — "Unterminated string starting at: ...")
+// and volcengine ark rejects with `missing input.arguments
+// (MissingParameter)`. When the invariant is violated this returns an
+// ark-shaped 400 error body (so tests can pin the relay's sanitizer against
+// a refusing upstream); nil means the request would be accepted.
+func validateResponsesInputToolCalls(rawBody []byte) []byte {
+	var probe struct {
+		Input json.RawMessage `json:"input"`
+	}
+	_ = json.Unmarshal(rawBody, &probe)
+	if len(probe.Input) == 0 {
+		return nil
+	}
+	var items []map[string]json.RawMessage
+	if err := json.Unmarshal(probe.Input, &items); err != nil {
+		return nil // string-form input: nothing to validate
+	}
+	for _, item := range items {
+		if string(item["type"]) != `"function_call"` {
+			continue
+		}
+		argsRaw, ok := item["arguments"]
+		if !ok {
+			return synthesizeArkMissingArgumentsError()
+		}
+		var args string
+		if err := json.Unmarshal(argsRaw, &args); err != nil || !json.Valid([]byte(args)) {
+			return synthesizeArkMissingArgumentsError()
+		}
+	}
+	return nil
+}
+
+// synthesizeArkMissingArgumentsError reproduces volcengine ark's rejection
+// dialect verbatim — distinct from the OpenAI envelope other mock behaviors
+// use, because it is the literal string the incident surfaced through the
+// relay.
+func synthesizeArkMissingArgumentsError() []byte {
+	body := map[string]any{
+		"error": map[string]any{
+			"message": "The request failed because it is missing `input.arguments` parameter.",
+			"type":    "BadRequest",
+			"param":   "input.arguments",
+			"code":    "MissingParameter",
 		},
 	}
 	out, _ := json.Marshal(body)
