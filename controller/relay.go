@@ -105,7 +105,17 @@ func Relay(c *gin.Context) {
 		markChannelPenalty(lastFailedChannelId, bizErr)
 	}
 
+	// Backoff before retrying after ark's transient "missing `partial`
+	// parameter" quirk: the same request succeeds moments later, but
+	// hammering the next channel within milliseconds just burns the retry
+	// budget while ark is still sick (observed 2026-09-10 on oleFedora01:
+	// 4 attempts in 1.2s, all quirk). Test hooks set this to 0.
+	quirkRetryDelay := 600 * time.Millisecond
+
 	for i := retryTimes; i > 0; i-- {
+		if bizErr != nil && upstreamQuirk400(bizErr) {
+			time.Sleep(quirkRetryDelay)
+		}
 		var channel *dbmodel.Channel
 		var err error
 		if sessionKey != "" && router.Enabled() {
