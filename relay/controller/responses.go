@@ -4,11 +4,15 @@ package controller
 import (
 	"bufio"
 	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -422,6 +426,14 @@ func getResponsesRequestBody(c *gin.Context, request *ResponsesRequest) (io.Read
 		logger.Warnf(c.Request.Context(), "responses: repaired malformed function_call arguments in input history")
 	}
 
+	// opencode session headers: opencode.ai/zen/go rejects requests without
+	// x-opencode-session/request/client. These live in HTTP headers (not the
+	// body), so we stash them on the gin context for the adaptor to apply.
+	if baseURL, ok := c.Get(ctxkey.BaseURL); ok && isOpencodeBaseURL(baseURL.(string)) {
+		c.Set(ctxkey.OpencodeSession, opencodeSessionID())
+		c.Set(ctxkey.OpencodeRequest, opencodeRequestID())
+	}
+
 	if !changed {
 		return bytes.NewReader(original), nil
 	}
@@ -600,4 +612,37 @@ func relayResponsesNonStream(c *gin.Context, resp *http.Response) (*relaymodel.U
 		return &relaymodel.Usage{}, nil
 	}
 	return envelope.Usage.ToUsage(), nil
+}
+
+// isOpencodeBaseURL checks the channel base_url for the opencode /go path.
+func isOpencodeBaseURL(baseURL string) bool {
+	return strings.Contains(baseURL, "opencode.ai/zen/go")
+}
+
+var (
+	opencodeOnce     sync.Once
+	opencodeSessID   string
+	opencodeReqAlloc sync.Mutex
+	opencodeReqSeq   int64
+)
+
+// opencodeSessionID returns a stable per-process session ID.
+func opencodeSessionID() string {
+	opencodeOnce.Do(func() {
+		b := make([]byte, 12)
+		if _, err := rand.Read(b); err == nil {
+			opencodeSessID = "oneapi-" + hex.EncodeToString(b)
+		} else {
+			opencodeSessID = fmt.Sprintf("oneapi-%d", time.Now().UnixNano())
+		}
+	})
+	return opencodeSessID
+}
+
+// opencodeRequestID returns a unique per-request ID.
+func opencodeRequestID() string {
+	opencodeReqAlloc.Lock()
+	defer opencodeReqAlloc.Unlock()
+	opencodeReqSeq++
+	return fmt.Sprintf("oneapi-req-%d-%d", time.Now().UnixNano(), opencodeReqSeq)
 }

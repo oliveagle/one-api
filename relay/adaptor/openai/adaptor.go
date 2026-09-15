@@ -7,6 +7,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/songquanpeng/one-api/common/ctxkey"
+
 	"github.com/songquanpeng/one-api/relay/adaptor"
 	"github.com/songquanpeng/one-api/relay/meta"
 	"github.com/songquanpeng/one-api/relay/model"
@@ -27,6 +29,15 @@ func (a *Adaptor) GetRequestURL(meta *meta.Meta) (string, error) {
 
 func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Request, meta *meta.Meta) error {
 	adaptor.SetupCommonRequestHeader(c, req, meta)
+	// opencode channels: inject session headers the /go endpoint requires.
+	// The gin context carries the IDs stashed by the Responses passthrough.
+	if sess, ok := c.Get(ctxkey.OpencodeSession); ok {
+		req.Header.Set("x-opencode-session", sess.(string))
+		if reqID, ok := c.Get(ctxkey.OpencodeRequest); ok {
+			req.Header.Set("x-opencode-request", reqID.(string))
+		}
+		req.Header.Set("x-opencode-client", "one-api")
+	}
 	return ProviderRegistry.MustGet(meta.ChannelType).SetupHeader(c, req, meta)
 }
 

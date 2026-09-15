@@ -22,7 +22,12 @@ const (
 	TokenId              = "token_id"
 	// TokenRPMLimit carries the token's per-minute relay request cap from
 	// TokenAuth to the RPM middleware.
-	TokenRPMLimit   = "token_rpm_limit"
+	TokenRPMLimit = "token_rpm_limit"
+	// OpencodeSession / OpencodeRequest carry opencode session headers for
+	// the /go endpoint (set by the Responses passthrough, applied by the
+	// openai adaptor's SetupRequestHeader).
+	OpencodeSession = "opencode_session"
+	OpencodeRequest = "opencode_request"
 	TokenName       = "token_name"
 	BaseURL         = "base_url"
 	AvailableModels = "available_models"
