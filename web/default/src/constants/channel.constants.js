@@ -14,6 +14,13 @@ export const CHANNEL_OPTIONS = [
     color: 'teal',
     description: '上游原生支持 Responses API：/v1/responses 直通转发，chat 请求将被拒绝（协议间不做转换）',
   },
+  {
+    key: 56,
+    text: 'OpenCode',
+    value: 56,
+    color: 'blue',
+    description: 'OpenCode 直连，URL 自动指向 opencode.ai，无需配置 Base URL',
+  },
   {key: 14, text: 'Anthropic', value: 14, color: 'black'},
   { key: 33, text: 'AWS', value: 33, color: 'black' },
   {key: 3, text: 'Azure', value: 3, color: 'olive'},

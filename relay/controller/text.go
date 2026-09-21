@@ -78,6 +78,12 @@ func RelayTextHelper(c *gin.Context) *model.ErrorWithStatusCode {
 	}
 	adaptor.Init(meta)
 
+	// opencode session headers for chat requests (same as responses path)
+	if meta.ChannelType == channeltype.OpenCode {
+		c.Set(ctxkey.OpencodeSession, opencodeSessionID())
+		c.Set(ctxkey.OpencodeRequest, opencodeRequestID())
+	}
+
 	// get request body
 	requestBody, err := getRequestBody(c, meta, textRequest, adaptor, requestModified)
 	if err != nil {
@@ -92,7 +98,9 @@ func RelayTextHelper(c *gin.Context) *model.ErrorWithStatusCode {
 	}
 	if isErrorHappened(meta, resp) {
 		billing.ReturnPreConsumedQuota(ctx, preConsumedQuota, meta.TokenId)
-		return RelayErrorHandler(resp)
+		errResp := RelayErrorHandler(resp)
+		applyRateLimitCooldown(c, meta, resp, errResp)
+		return errResp
 	}
 
 	// set routing headers before response so client can see which channel/model was used
@@ -109,6 +117,7 @@ func RelayTextHelper(c *gin.Context) *model.ErrorWithStatusCode {
 	if respErr != nil {
 		logger.Errorf(ctx, "respErr is not nil: %+v", *respErr)
 		billing.ReturnPreConsumedQuota(ctx, preConsumedQuota, meta.TokenId)
+		applyRateLimitCooldown(c, meta, nil, respErr)
 		return respErr
 	}
 	// post-consume quota

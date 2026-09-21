@@ -186,7 +186,7 @@ func (r *Router) ChooseAlternative(group, model, session string, exclude map[int
 		if exclude != nil && exclude[ch.Id] {
 			continue
 		}
-		if r.store.IsCooledDown(ch.Id, now) {
+		if r.store.IsCooledDown(ch.Id, now) || dbmodel.ChannelCoolingDown(ch.Id) {
 			continue
 		}
 		eligible = append(eligible, ch)

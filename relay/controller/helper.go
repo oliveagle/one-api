@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"regexp"
 	"strings"
+	"time"
 
 	"github.com/songquanpeng/one-api/common/helper"
 	"github.com/songquanpeng/one-api/relay/constant/role"
@@ -25,7 +27,14 @@ import (
 	"github.com/songquanpeng/one-api/relay/meta"
 	relaymodel "github.com/songquanpeng/one-api/relay/model"
 	"github.com/songquanpeng/one-api/relay/relaymode"
+	"github.com/songquanpeng/one-api/relay/routing"
 )
+
+// quota429Re matches quota/rate-limit error patterns in upstream messages.
+var quota429Re = regexp.MustCompile(`(?i)(quota|usage limit|usage quota|billing|exceeded.*limit|reached.*limit|请求已达|限额|限流)`)
+
+// resetAtRe extracts the upstream's advertised quota reset time.
+var resetAtRe = regexp.MustCompile(`(?:will )?reset (?:at|on)\s+([0-9]{4}-[0-9]{2}-[0-9]{2}[ T][0-9]{2}:[0-9]{2}:[0-9]{2}(?:[.,][0-9]+)?(?:\s*[+-][0-9]{4})?(?:\s*[A-Z]{2,5})?)`)
 
 func getAndValidateTextRequest(c *gin.Context, relayMode int) (*relaymodel.GeneralOpenAIRequest, bool, error) {
 	ctx := c.Request.Context()
@@ -238,6 +247,97 @@ func isErrorHappened(meta *meta.Meta, resp *http.Response) bool {
 		return true
 	}
 	return false
+}
+
+// applyRateLimitCooldown checks if the error is a rate-limit or quota-exceeded
+// error and applies a cooldown to the channel so subsequent requests skip it.
+// It writes to BOTH the global registry (ChannelCoolingDown — consulted by all
+// routing paths) and the sticky store (for sticky-routed sessions).
+func applyRateLimitCooldown(c *gin.Context, meta *meta.Meta, resp *http.Response, respErr *relaymodel.ErrorWithStatusCode) {
+	if resp == nil && respErr == nil {
+		return
+	}
+
+	channelId := meta.ChannelId
+	if channelId <= 0 {
+		return
+	}
+
+	retryAfterMs := int64(0)
+	isRateLimited := false
+
+	// Check HTTP status code
+	if resp != nil {
+		if resp.StatusCode == http.StatusTooManyRequests {
+			isRateLimited = true
+			retryAfterMs = parseRetryAfterMs(resp.Header.Get("Retry-After"))
+		}
+	}
+
+	// Check error body for quota/rate-limit patterns
+	if respErr != nil {
+		msg := strings.ToLower(respErr.Error.Message)
+		if respErr.StatusCode == http.StatusTooManyRequests ||
+			strings.Contains(msg, "rate limit") ||
+			strings.Contains(msg, "rate_limit") ||
+			strings.Contains(msg, "quota exceeded") ||
+			strings.Contains(msg, "weekly") && strings.Contains(msg, "limit") ||
+			strings.Contains(msg, "monthly") && strings.Contains(msg, "limit") ||
+			strings.Contains(msg, "insufficient_quota") ||
+			strings.Contains(msg, "you have exceeded") ||
+			strings.Contains(msg, "请求已达") ||
+			strings.Contains(msg, "限额") ||
+			strings.Contains(msg, "限流") {
+			isRateLimited = true
+			if retryAfterMs == 0 && respErr.RetryAfterMs > 0 {
+				retryAfterMs = respErr.RetryAfterMs
+			}
+		}
+	}
+
+	if !isRateLimited {
+		return
+	}
+
+	// Determine cooldown duration — use the exact reset time from upstream when available
+	var cooldownDuration time.Duration
+	var until time.Time
+	if retryAfterMs > 0 {
+		cooldownDuration = time.Duration(retryAfterMs) * time.Millisecond
+	} else {
+		msg := ""
+		if respErr != nil {
+			msg = respErr.Error.Message
+		}
+		if quota429Re.MatchString(msg) {
+			until = time.Now().Add(15 * time.Minute)
+			if m := resetAtRe.FindStringSubmatch(msg); m != nil {
+				ts := strings.TrimSpace(m[1])
+				if parsed, perr := time.Parse("2006-01-02 15:04:05 -0700 MST", ts); perr == nil && parsed.After(time.Now()) {
+					until = parsed
+				} else if parsed, perr := time.Parse(time.RFC3339, ts); perr == nil && parsed.After(time.Now()) {
+					until = parsed
+				}
+			}
+			cooldownDuration = time.Until(until)
+		} else {
+			cooldownDuration = 60 * time.Second
+		}
+	}
+
+	if until.IsZero() {
+		until = time.Now().Add(cooldownDuration)
+	}
+
+	// Write to global registry — consulted by BOTH sticky and non-sticky paths
+	model.MarkChannelCooldown(channelId, until)
+
+	// Also write to sticky store for sticky-routed sessions
+	routing.DefaultRouter().Fail(meta.Group, meta.ActualModelName, c.GetString(ctxkey.SessionKey), channelId)
+
+	logger.Warnf(c.Request.Context(),
+		"channel %d rate-limited, cooling down for %v until %s",
+		channelId, cooldownDuration, until.Format(time.RFC3339))
 }
 
 func setSystemPrompt(ctx context.Context, request *relaymodel.GeneralOpenAIRequest, prompt string) (reset bool) {

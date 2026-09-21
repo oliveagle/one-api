@@ -180,6 +180,10 @@ func upstreamSupportsResponses(meta *meta.Meta) bool {
 	if meta.Config.SupportResponses || meta.Config.ResponsesOnly {
 		return true
 	}
+	// OpenCode channels: 内部做 Responses→Chat 转换，自动识别为 Responses 能力。
+	if meta.ChannelType == channeltype.OpenCode {
+		return true
+	}
 	return meta.ChannelType == channeltype.AIHubMix || meta.ChannelType == channeltype.OpenAIResponses
 }
 
@@ -207,6 +211,11 @@ func relayResponsesCreate(c *gin.Context) *relaymodel.ErrorWithStatusCode {
 	// helper by middleware.Distribute with 503 "no channel available", the same
 	// way /v1/chat/completions behaves, so no check is duplicated here.
 	meta.IsStream = request.Stream
+
+	// opencode 旧配置走 Responses → Chat 转换；新配置直接 passthrough。
+	if isOpencodeChannel(c) {
+		return relayResponsesOpencodeCreate(c, &request)
+	}
 
 	// No conversion: a Responses request may only be served by a channel whose
 	// upstream natively speaks the Responses API. 503 (not 400) so the relay's
@@ -265,12 +274,15 @@ func relayResponsesCreate(c *gin.Context) *relaymodel.ErrorWithStatusCode {
 	}
 	if isErrorHappened(meta, resp) {
 		billing.ReturnPreConsumedQuota(ctx, preConsumedQuota, meta.TokenId)
-		return RelayErrorHandler(resp)
+		errResp := RelayErrorHandler(resp)
+		applyRateLimitCooldown(c, meta, resp, errResp)
+		return errResp
 	}
 
 	usage, respErr := relayResponsesResponse(c, resp)
 	if respErr != nil {
 		billing.ReturnPreConsumedQuota(ctx, preConsumedQuota, meta.TokenId)
+		applyRateLimitCooldown(c, meta, nil, respErr)
 		return respErr
 	}
 
@@ -429,7 +441,7 @@ func getResponsesRequestBody(c *gin.Context, request *ResponsesRequest) (io.Read
 	// opencode session headers: opencode.ai/zen/go rejects requests without
 	// x-opencode-session/request/client. These live in HTTP headers (not the
 	// body), so we stash them on the gin context for the adaptor to apply.
-	if baseURL, ok := c.Get(ctxkey.BaseURL); ok && isOpencodeBaseURL(baseURL.(string)) {
+	if isOpencodeChannel(c) {
 		c.Set(ctxkey.OpencodeSession, opencodeSessionID())
 		c.Set(ctxkey.OpencodeRequest, opencodeRequestID())
 	}
@@ -614,9 +626,276 @@ func relayResponsesNonStream(c *gin.Context, resp *http.Response) (*relaymodel.U
 	return envelope.Usage.ToUsage(), nil
 }
 
-// isOpencodeBaseURL checks the channel base_url for the opencode /go path.
-func isOpencodeBaseURL(baseURL string) bool {
-	return strings.Contains(baseURL, "opencode.ai/zen/go")
+// isOpencodeChannel checks if the current request is routed to an opencode channel.
+// opencode channels are identified by their base_url containing the opencode path.
+func isOpencodeChannel(c *gin.Context) bool {
+	return c.GetInt(ctxkey.Channel) == channeltype.OpenCode
+}
+
+// relayResponsesOpencodeCreate handles POST /v1/responses for opencode channels.
+// It converts the Responses API request to Chat Completions, sends it to the
+// opencode upstream, and converts the Chat response back to Responses format.
+//
+// This is opencode-specific and NOT a general-purpose conversion layer.
+func relayResponsesOpencodeCreate(c *gin.Context, request *ResponsesRequest) *relaymodel.ErrorWithStatusCode {
+	ctx := c.Request.Context()
+	meta := meta.GetByContext(c)
+	meta.IsStream = request.Stream
+
+	// Map the model name the same way the text path does.
+	meta.OriginModelName = request.Model
+	mappedModel, _ := getMappedModelName(request.Model, meta.ModelMapping)
+	request.Model = mappedModel
+	meta.ActualModelName = mappedModel
+
+	// Billing: same as the normal Responses path.
+	modelRatio := billingratio.GetModelRatio(request.Model, meta.ChannelType)
+	groupRatio := billingratio.GetGroupRatio(meta.Group)
+	ratio := modelRatio * groupRatio
+
+	promptTokens := estimateResponsesPromptTokens(request)
+	meta.PromptTokens = promptTokens
+
+	billingRequest := &relaymodel.GeneralOpenAIRequest{
+		Model:     request.Model,
+		MaxTokens: request.MaxOutput,
+	}
+	preConsumedQuota, bizErr := preConsumeQuota(ctx, billingRequest, promptTokens, ratio, meta)
+	if bizErr != nil {
+		logger.Warnf(ctx, "opencode: preConsumeQuota failed: %+v", *bizErr)
+		return bizErr
+	}
+
+	// Get adaptor (will be the OpenAI adaptor for opencode).
+	adaptor := relay.GetAdaptor(meta.APIType)
+	if adaptor == nil {
+		billing.ReturnPreConsumedQuota(ctx, preConsumedQuota, meta.TokenId)
+		return openai.ErrorWrapper(fmt.Errorf("invalid api type: %d", meta.APIType), "invalid_api_type", http.StatusBadRequest)
+	}
+	adaptor.Init(meta)
+
+	// opencode session headers.
+	if isOpencodeChannel(c) {
+		c.Set(ctxkey.OpencodeSession, opencodeSessionID())
+		c.Set(ctxkey.OpencodeRequest, opencodeRequestID())
+	}
+
+	// Step 1: Convert Responses request → Chat request（bitx-proxy 的 to_chat_wire_json 等价逻辑）
+	chatRequest := opencodeResponsesToChatRequest(request)
+
+	// Step 2: Let the adaptor transform the Chat request (e.g. stream_options injection).
+	converted, err := adaptor.ConvertRequest(c, meta.Mode, chatRequest)
+	if err != nil {
+		billing.ReturnPreConsumedQuota(ctx, preConsumedQuota, meta.TokenId)
+		return openai.ErrorWrapper(err, "convert_request_failed", http.StatusInternalServerError)
+	}
+
+	chatBody, err := json.Marshal(converted)
+	if err != nil {
+		billing.ReturnPreConsumedQuota(ctx, preConsumedQuota, meta.TokenId)
+		return openai.ErrorWrapper(err, "marshal_chat_request_failed", http.StatusInternalServerError)
+	}
+
+	logger.Debugf(ctx, "opencode: converted Responses→Chat request: %s", string(chatBody))
+
+	// Step 3: Send Chat request to opencode upstream.
+	origPath := meta.RequestURLPath
+	meta.RequestURLPath = "/v1/chat/completions"
+	resp, err := adaptor.DoRequest(c, meta, bytes.NewReader(chatBody))
+	meta.RequestURLPath = origPath
+	if err != nil {
+		logger.Errorf(ctx, "opencode: DoRequest failed: %s", err.Error())
+		billing.ReturnPreConsumedQuota(ctx, preConsumedQuota, meta.TokenId)
+		return openai.ErrorWrapper(err, "do_request_failed", http.StatusInternalServerError)
+	}
+	if isErrorHappened(meta, resp) {
+		billing.ReturnPreConsumedQuota(ctx, preConsumedQuota, meta.TokenId)
+		return RelayErrorHandler(resp)
+	}
+
+	// Step 4: Convert Chat response → Responses response（bitx-proxy 的 from_chat_response_json / from_chat_chunk_json 等价逻辑）
+	usage, respErr := opencodeRelayResponsesFromChatResponse(c, resp, request.Model, meta.IsStream)
+	if respErr != nil {
+		billing.ReturnPreConsumedQuota(ctx, preConsumedQuota, meta.TokenId)
+		return respErr
+	}
+
+	// post-consume quota
+	if PostConsumeQuotaSynchronous {
+		postConsumeQuota(ctx, usage, meta, billingRequest, ratio, preConsumedQuota, modelRatio, groupRatio, false)
+	} else {
+		go postConsumeQuota(ctx, usage, meta, billingRequest, ratio, preConsumedQuota, modelRatio, groupRatio, false)
+	}
+	return nil
+}
+
+// opencodeRelayResponsesFromChatResponse 读取 Chat 响应并转换为 Responses 格式。
+func opencodeRelayResponsesFromChatResponse(c *gin.Context, resp *http.Response, requestModel string, isStream bool) (*relaymodel.Usage, *relaymodel.ErrorWithStatusCode) {
+	if isStream {
+		return opencodeRelayResponsesStreamFromChat(c, resp, requestModel)
+	}
+	return opencodeRelayResponsesNonStreamFromChat(c, resp, requestModel)
+}
+
+// opencodeRelayResponsesNonStreamFromChat 读取完整的 Chat 非流式响应，转换为 Responses 格式。
+func opencodeRelayResponsesNonStreamFromChat(c *gin.Context, resp *http.Response, requestModel string) (*relaymodel.Usage, *relaymodel.ErrorWithStatusCode) {
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, openai.ErrorWrapper(err, "read_chat_response_failed", http.StatusInternalServerError)
+	}
+
+	// Parse Chat response
+	var chatResp map[string]any
+	if err := json.Unmarshal(body, &chatResp); err != nil {
+		return nil, openai.ErrorWrapper(err, "unmarshal_chat_response_failed", http.StatusInternalServerError)
+	}
+
+	// Check for upstream error
+	if errObj, ok := chatResp["error"].(map[string]any); ok {
+		errMsg, _ := errObj["message"].(string)
+		if errMsg != "" {
+			return nil, &relaymodel.ErrorWithStatusCode{
+				Error: relaymodel.Error{
+					Message: errMsg,
+					Type:    "upstream_error",
+				},
+				StatusCode: http.StatusBadGateway,
+			}
+		}
+	}
+
+	// Convert: Chat → Responses（bitx-proxy from_chat_response_json 等价逻辑）
+	responsesResp := opencodeChatToResponsesResponse(chatResp, requestModel)
+
+	// Marshal Responses response
+	responseBody, err := json.Marshal(responsesResp)
+	if err != nil {
+		return nil, openai.ErrorWrapper(err, "marshal_responses_response_failed", http.StatusInternalServerError)
+	}
+
+	// Write response to client
+	c.Writer.Header().Set("Content-Type", "application/json")
+	c.Writer.WriteHeader(http.StatusOK)
+	if _, err := c.Writer.Write(responseBody); err != nil {
+		logger.Errorf(c.Request.Context(), "opencode: write response failed: %s", err.Error())
+	}
+
+	// Extract usage for billing
+	usage := opencodeExtractUsage(chatResp)
+	return usage, nil
+}
+
+// opencodeRelayResponsesStreamFromChat 把 Chat 流式响应转换为 Responses 流式事件。
+func opencodeRelayResponsesStreamFromChat(c *gin.Context, resp *http.Response, requestModel string) (*relaymodel.Usage, *relaymodel.ErrorWithStatusCode) {
+	defer resp.Body.Close()
+
+	// Set SSE headers for Responses API
+	c.Writer.Header().Set("Content-Type", "text/event-stream")
+	c.Writer.Header().Set("Cache-Control", "no-cache")
+	c.Writer.Header().Set("Connection", "keep-alive")
+	c.Writer.Header().Set("X-Accel-Buffering", "no")
+
+	streamState := &opencodeStreamState{model: requestModel}
+	var lastUsage *relaymodel.Usage
+
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), opencodeMaxStreamLineLen)
+	scanner.Split(bufio.ScanLines)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		// 转换：Chat SSE → Responses SSE（bitx-proxy from_chat_chunk_json 等价逻辑）
+		events := opencodeChatStreamToResponsesStream(line, streamState)
+		for _, event := range events {
+			if _, err := fmt.Fprint(c.Writer, event); err != nil {
+				logger.Errorf(c.Request.Context(), "opencode: write stream event failed: %s", err.Error())
+				return lastUsage, nil
+			}
+			c.Writer.Flush()
+		}
+
+		// 从 usage chunk 提取 token 用量
+		if usage := opencodeExtractUsageFromStreamLine(line); usage != nil {
+			lastUsage = usage
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		logger.Errorf(c.Request.Context(), "opencode: scan stream failed: %s", err.Error())
+	}
+
+	// Guarantee response.completed is emitted even if no finish_reason was received.
+	// Some providers send a usage-only final chunk or just [DONE] without finish_reason.
+	if !streamState.completed {
+		completedEvent := opencodeSSEEvent("response.completed", map[string]any{
+			"type": "response.completed",
+			"response": map[string]any{
+				"id":         streamState.respId,
+				"object":     "response",
+				"created_at": time.Now().Unix(),
+				"model":      streamState.model,
+				"status":     "completed",
+				"output":     []any{},
+				"usage": map[string]any{
+					"input_tokens":  0,
+					"output_tokens": 0,
+					"total_tokens":  0,
+				},
+			},
+		})
+		_, _ = fmt.Fprint(c.Writer, completedEvent)
+		c.Writer.Flush()
+	}
+
+	if lastUsage == nil {
+		lastUsage = &relaymodel.Usage{}
+	}
+
+	return lastUsage, nil
+}
+
+// opencodeExtractUsage 从 Chat 非流式响应中提取 Usage。
+func opencodeExtractUsage(chatResp map[string]any) *relaymodel.Usage {
+	u, ok := chatResp["usage"].(map[string]any)
+	if !ok {
+		return &relaymodel.Usage{}
+	}
+	usage := &relaymodel.Usage{}
+	if pt, ok := u["prompt_tokens"].(float64); ok {
+		usage.PromptTokens = int(pt)
+	}
+	if ct, ok := u["completion_tokens"].(float64); ok {
+		usage.CompletionTokens = int(ct)
+	}
+	if tt, ok := u["total_tokens"].(float64); ok {
+		usage.TotalTokens = int(tt)
+	}
+	return usage
+}
+
+// opencodeExtractUsageFromStreamLine 从 Chat 流式 SSE 行中提取 Usage。
+func opencodeExtractUsageFromStreamLine(line string) *relaymodel.Usage {
+	trimmed := strings.TrimSpace(line)
+	if !strings.HasPrefix(trimmed, opencodeDataPrefix) {
+		return nil
+	}
+	data := strings.TrimSpace(strings.TrimPrefix(trimmed, opencodeDataPrefix))
+	if data == "" || data == opencodeDone {
+		return nil
+	}
+	var chunk struct {
+		Usage *relaymodel.Usage `json:"usage"`
+	}
+	if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+		return nil
+	}
+	if chunk.Usage != nil && chunk.Usage.TotalTokens > 0 {
+		return chunk.Usage
+	}
+	return nil
 }
 
 var (

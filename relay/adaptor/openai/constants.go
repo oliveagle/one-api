@@ -25,3 +25,13 @@ var ModelList = []string{
 	"o1-preview", "o1-preview-2024-09-12",
 	"o1-mini", "o1-mini-2024-09-12",
 }
+
+// OpenCodeModelList is the model list for OpenCode channels.
+// These are the models available through the opencode upstream.
+var OpenCodeModelList = []string{
+	"mimo-v2.5",
+	"mimo-v2.5-free",
+	"coding_medium",
+	"deepseek-v4-flash",
+	"deepseek-v4-flash-free",
+}

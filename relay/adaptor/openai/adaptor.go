@@ -10,6 +10,7 @@ import (
 	"github.com/songquanpeng/one-api/common/ctxkey"
 
 	"github.com/songquanpeng/one-api/relay/adaptor"
+	"github.com/songquanpeng/one-api/relay/channeltype"
 	"github.com/songquanpeng/one-api/relay/meta"
 	"github.com/songquanpeng/one-api/relay/model"
 	"github.com/songquanpeng/one-api/relay/relaymode"
@@ -45,8 +46,10 @@ func (a *Adaptor) ConvertRequest(c *gin.Context, relayMode int, request *model.G
 	if request == nil {
 		return nil, errors.New("request is nil")
 	}
-	if request.Stream {
-		// always return usage in stream mode
+	// bitx-proxy does NOT add stream_options for opencode channels.
+	// The opencode upstream returns usage in the final chunk without requiring it.
+	// Only add stream_options for non-opencode channels.
+	if request.Stream && a.ChannelType != channeltype.OpenCode {
 		if request.StreamOptions == nil {
 			request.StreamOptions = &model.StreamOptions{}
 		}

@@ -65,4 +65,9 @@ const (
 	// requests are refused with 503 so the relay fails over to a chat channel
 	// — protocol conversion between the two APIs has been removed.
 	OpenAIResponses
+	// OpenCode is an OpenAI-compatible channel whose upstream is opencode.
+	// The relay auto-detects opencode channels and performs Responses ↔ Chat
+	// protocol conversion so coding-agent clients (cx/codex) can use the
+	// Responses API while opencode only speaks Chat Completions.
+	OpenCode
 )

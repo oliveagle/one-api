@@ -77,8 +77,8 @@ func TestToAPIType_Unknown(t *testing.T) {
 // upstream URL" types (LLM providers running locally like Ollama, OpenAI
 // variants whose URL is fixed at runtime).
 func TestChannelBaseURLs_EverySlotAccountedFor(t *testing.T) {
-	if len(ChannelBaseURLs) != Dummy {
-		t.Fatalf("ChannelBaseURLs length = %d, want Dummy (%d)", len(ChannelBaseURLs), Dummy)
+	if len(ChannelBaseURLs) != OpenCode+1 {
+		t.Fatalf("ChannelBaseURLs length = %d, want OpenCode+1 (%d)", len(ChannelBaseURLs), OpenCode+1)
 	}
 }
 

@@ -181,7 +181,17 @@ func Distribute() func(c *gin.Context) {
 				}
 			}
 		}
+		// Wire-protocol preference: Responses API requests prefer support_responses channels.
+		if channel != nil && preferResponsesForPath(c.Request.URL.Path) {
+			if cfg, cfgErr := channel.LoadConfig(); cfgErr == nil && !cfg.SupportResponses && !cfg.ResponsesOnly {
+				if alt := findResponsesCapableChannel(userGroup, requestModel, channel.Id); alt != nil {
+					logger.Debugf(ctx, "wire-protocol: switching channel #%d -> #%d", channel.Id, alt.Id)
+					channel = alt
+				}
+			}
+		}
 		sessionKey := c.GetString(ctxkey.SessionKey)
+
 		logger.Debugf(ctx, "user id %d, user group: %s, request model: %s, using channel #%d, session %q (source=%s, sticky=%t)",
 			userId, userGroup, requestModel, channel.Id, sessionKey,
 			c.GetString(ctxkey.SessionSource), routing.DefaultRouter().StickyAppliesTo(requestModel, sessionKey))
@@ -243,4 +253,32 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 		}
 	}
 	c.Set(ctxkey.Config, cfg)
+}
+
+// preferResponsesForPath reports whether the request path targets the Responses API.
+func preferResponsesForPath(path string) bool {
+	return strings.HasPrefix(path, "/v1/responses")
+}
+
+// findResponsesCapableChannel picks a random channel from the same group+model
+// that has support_responses=true, excluding the given channel id. Returns nil
+// when no better candidate exists.
+func findResponsesCapableChannel(group, modelName string, excludeId int) *model.Channel {
+	channels := model.CacheGetSatisfiedChannels(group, modelName)
+	for _, ch := range channels {
+		if ch.Id == excludeId {
+			continue
+		}
+		if ch.Status != model.ChannelStatusEnabled {
+			continue
+		}
+		cfg, err := ch.LoadConfig()
+		if err != nil {
+			continue
+		}
+		if cfg.SupportResponses || cfg.ResponsesOnly {
+			return ch
+		}
+	}
+	return nil
 }

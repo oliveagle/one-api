@@ -58,10 +58,13 @@ var ChannelBaseURLs = []string{
 	"http://mock",          // 53 (channeltype.Mock) — never contacted; the mock
 	// adaptor synthesizes responses in-process. The entry only exists to
 	// satisfy the len(ChannelBaseURLs) == Dummy invariant in init().
+	"",                      // 54 (Dummy — unused placeholder)
+	"https://api.openai.com", // 55 (OpenAIResponses — uses same base as OpenAI)
+	"https://opencode.ai/zen/go", // 56 (OpenCode — hardcoded in provider registry)
 }
 
 func init() {
-	if len(ChannelBaseURLs) != Dummy {
+	if len(ChannelBaseURLs) != OpenCode+1 {
 		panic("channel base urls length not match")
 	}
 }

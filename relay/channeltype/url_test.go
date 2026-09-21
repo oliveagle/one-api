@@ -7,6 +7,6 @@ import (
 
 func TestChannelBaseURLs(t *testing.T) {
 	Convey("channel base urls", t, func() {
-		So(len(ChannelBaseURLs), ShouldEqual, Dummy)
+		So(len(ChannelBaseURLs), ShouldEqual, OpenCode+1)
 	})
 }

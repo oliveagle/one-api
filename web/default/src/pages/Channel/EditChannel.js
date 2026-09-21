@@ -358,20 +358,6 @@ const EditChannel = () => {
                 />
               </Form.Field>
             )}
-            {inputs.type === 50 && (
-                <Form.Field>
-                  <Form.Input
-                      required
-                  label={t('channel.edit.base_url')}
-                  name='base_url'
-                  placeholder={t('channel.edit.base_url_placeholder')}
-                  onChange={handleInputChange}
-                  value={inputs.base_url}
-                  autoComplete='new-password'
-                />
-              </Form.Field>
-            )}
-
             {inputs.type === 18 && (
               <Form.Field>
                 <Form.Input

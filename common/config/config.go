@@ -56,7 +56,7 @@ var EmailDomainWhitelist = []string{
 
 var DebugEnabled = strings.ToLower(os.Getenv("DEBUG")) == "true"
 var DebugSQLEnabled = strings.ToLower(os.Getenv("DEBUG_SQL")) == "true"
-var MemoryCacheEnabled = strings.ToLower(os.Getenv("MEMORY_CACHE_ENABLED")) == "true"
+var MemoryCacheEnabled = strings.ToLower(os.Getenv("MEMORY_CACHE_ENABLED")) != "false"
 
 var LogConsumeEnabled = true
 
@@ -98,7 +98,7 @@ var AutomaticEnableChannelEnabled = false
 var QuotaRemindThreshold int64 = 1000
 var PreConsumedQuota int64 = 500
 var ApproximateTokenEnabled = false
-var RetryTimes = 0
+var RetryTimes = 10
 
 // LogRetentionDays caps how long request/consume logs are kept; the retention
 // loop deletes older rows once at startup and then daily. 0 disables cleanup
@@ -188,7 +188,7 @@ var TestPrompt = env.String("TEST_PROMPT", "Output only your specific model name
 // If the sticky node later fails with a retryable error (rate limit, quota
 // exhausted, 5xx), the relay fails over to another healthy node and re-pins the
 // session to it.
-var StickyRoutingEnabled = strings.ToLower(os.Getenv("STICKY_ROUTING_ENABLED")) == "true"
+var StickyRoutingEnabled = strings.ToLower(os.Getenv("STICKY_ROUTING_ENABLED")) != "false"
 
 // StickyModels is a comma separated allowlist of model names that participate
 // in session-sticky routing. Empty means every model participates (only when a
@@ -221,7 +221,7 @@ var SessionFingerprintEnabled = env.Bool("SESSION_FINGERPRINT_ENABLED", true)
 // which is coarser than per-session stickiness, so it is off by default: with
 // the fingerprint enabled, distinct sessions on the same token should still be
 // able to spread across nodes.
-var StickyFallbackToToken = env.Bool("STICKY_FALLBACK_TO_TOKEN", false)
+var StickyFallbackToToken = env.Bool("STICKY_FALLBACK_TO_TOKEN", true)
 
 // StickyCooldownSeconds is how long a node that failed during a session is
 // kept out of the sticky selection, so the session does not immediately bounce

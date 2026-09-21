@@ -78,7 +78,7 @@ func GetAllUsers(startIdx int, num int, order string) (users []*User, err error)
 }
 
 func SearchUsers(keyword string) (users []*User, err error) {
-	if !common.UsingPostgreSQL {
+	if !common.UsingPostgreSQL && !common.UsingRQLite {
 		err = DB.Omit("password").Where("id = ? or username LIKE ? or email LIKE ? or display_name LIKE ?", keyword, keyword+"%", keyword+"%", keyword+"%").Find(&users).Error
 	} else {
 		err = DB.Omit("password").Where("username LIKE ? or email LIKE ? or display_name LIKE ?", keyword+"%", keyword+"%", keyword+"%").Find(&users).Error

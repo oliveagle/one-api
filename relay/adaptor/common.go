@@ -11,7 +11,15 @@ import (
 )
 
 func SetupCommonRequestHeader(c *gin.Context, req *http.Request, meta *meta.Meta) {
-	req.Header.Set("Content-Type", c.Request.Header.Get("Content-Type"))
+	// Content-Type: always set application/json for POST/PUT/PATCH requests with body.
+	// bitx-proxy always sets this explicitly; copying from incoming request can leave
+	// it empty if the client didn't send it, causing upstream 400 errors.
+	contentType := c.Request.Header.Get("Content-Type")
+	if contentType == "" && (c.Request.Method == http.MethodPost || c.Request.Method == http.MethodPut || c.Request.Method == http.MethodPatch) {
+		contentType = "application/json"
+	}
+	req.Header.Set("Content-Type", contentType)
+
 	req.Header.Set("Accept", c.Request.Header.Get("Accept"))
 	if meta.IsStream && c.Request.Header.Get("Accept") == "" {
 		req.Header.Set("Accept", "text/event-stream")

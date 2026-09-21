@@ -110,6 +110,14 @@ func buildProviderRegistry() *provider.Registry {
 	r.MustRegister(provider.Descriptor{ChannelType: channeltype.XAI, Name: "xai", Models: xai.ModelList, RequestURL: defaultRequestURL, SetupHeader: defaultBearerHeader})
 	r.MustRegister(provider.Descriptor{ChannelType: channeltype.XunfeiV2, Name: "xunfeiv2", Models: xunfeiv2.ModelList, RequestURL: defaultRequestURL, SetupHeader: defaultBearerHeader})
 
+	r.MustRegister(provider.Descriptor{
+		ChannelType: channeltype.OpenCode,
+		Name:        "opencode",
+		Models:      OpenCodeModelList,
+		RequestURL:  opencodeRequestURL,
+		SetupHeader: defaultBearerHeader,
+	})
+
 	// Fallback covers OpenAI, AIHubMix, OpenAICompatible, and every other
 	// channel that shares the default OpenAI URL shape.
 	if err := r.SetFallback(provider.Descriptor{
@@ -160,4 +168,11 @@ func openRouterSetupHeader(_ *gin.Context, req *http.Request, m *meta.Meta) erro
 	req.Header.Set("HTTP-Referer", "https://github.com/songquanpeng/one-api")
 	req.Header.Set("X-Title", "One API")
 	return nil
+}
+
+// opencodeRequestURL returns the hardcoded request URL for OpenCode channels.
+// The base URL is always https://opencode.ai/zen/go — users don't need to
+// configure it in the channel admin UI.
+func opencodeRequestURL(m *meta.Meta) (string, error) {
+	return "https://opencode.ai/zen/go" + m.RequestURLPath, nil
 }

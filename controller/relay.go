@@ -232,7 +232,16 @@ func upstreamQuirk400(err *model.ErrorWithStatusCode) bool {
 	}
 	msg := strings.ToLower(err.Error.Message)
 	// volc ark: "The request failed because it is missing `partial` parameter"
-	return strings.Contains(msg, "missing `partial` parameter")
+	if strings.Contains(msg, "missing `partial` parameter") {
+		return true
+	}
+	// opencode: transient 400s from the /go endpoint (e.g. missing session,
+	// internal routing glitch) should failover to another channel instead of
+	// surfacing a hard 400 to the client.
+	if strings.Contains(msg, "provider returned error") || strings.Contains(msg, "missingsessionid") {
+		return true
+	}
+	return false
 }
 
 func processChannelRelayError(ctx context.Context, userId int, channelId int, channelName string, err model.ErrorWithStatusCode) {
