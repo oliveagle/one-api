@@ -39,6 +39,7 @@ import (
 	"github.com/songquanpeng/one-api/model"
 	"github.com/songquanpeng/one-api/relay/channeltype"
 	relaycontroller "github.com/songquanpeng/one-api/relay/controller"
+	"github.com/songquanpeng/one-api/relay/routing"
 )
 
 func init() {
@@ -114,6 +115,8 @@ func setupMockRelayStackWithOptions(t *testing.T, opts mockStackOptions) *gin.En
 	// clean 429-penalty registry so cooldown tests don't bleed into each other.
 	model.ResetChannelCooldowns()
 	t.Cleanup(model.ResetChannelCooldowns)
+	routing.DefaultRouter().Store().Clear()
+	t.Cleanup(func() { routing.DefaultRouter().Store().Clear() })
 	middleware.ResetRPMLimiter()
 	t.Cleanup(middleware.ResetRPMLimiter)
 	testutil.DisableRedis(t)

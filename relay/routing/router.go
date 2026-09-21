@@ -162,6 +162,14 @@ func (r *Router) chooseAlternativeFrom(candidates []*dbmodel.Channel, excludeId 
 		}
 	}
 	if len(eligible) == 0 {
+		// single-channel deployment: the only candidate is the pinned
+		// channel itself. Return it rather than 503 — the session has
+		// nowhere else to go.
+		for _, ch := range candidates {
+			eligible = append(eligible, ch)
+		}
+	}
+	if len(eligible) == 0 {
 		return nil, ErrNoChannel
 	}
 	return eligible[rand.Intn(len(eligible))], nil
