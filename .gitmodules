@@ -1,0 +1,6 @@
+[submodule "submodules/rqlite"]
+	path = submodules/rqlite
+	url = https://github.com/rqlite/rqlite.git
+[submodule "submodules/litellm_lb"]
+	path = submodules/litellm_lb
+	url = git@github.com:oliveagle/litellm_lb.git

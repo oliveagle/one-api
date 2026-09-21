@@ -292,8 +292,9 @@ func wireMismatch(err *model.ErrorWithStatusCode) bool {
 var quota429Re = regexp.MustCompile(`(?i)(quota|usage limit|usage quota|billing|exceeded.*limit|reached.*limit)`)
 
 // resetAtRe extracts the upstream's advertised quota reset time, e.g.
-// "It will reset at 2026-08-27 23:59:59 +0800 CST" (volc) or an RFC3339 ts.
-var resetAtRe = regexp.MustCompile(`reset (?:at|on)\s+([0-9]{4}-[0-9]{2}-[0-9]{2}[ T][0-9]{2}:[0-9]{2}:[0-9]{2}(?:[.,][0-9]+)?(?:\s*[+-][0-9]{4})?(?:\s*[A-Z]{2,5})?)`)
+// "It will reset at 2026-08-27 23:59:59 +0800 CST" (volc),
+// "将在 2026-09-22 22:58:54 重置" (Chinese providers), or an RFC3339 ts.
+var resetAtRe = regexp.MustCompile(`(?:(?:reset|将在)\s*(?:at|on|)\s*|reset\s+)([0-9]{4}-[0-9]{2}-[0-9]{2}[ T][0-9]{2}:[0-9]{2}:[0-9]{2}(?:[.,][0-9]+)?(?:\s*[+-][0-9]{4})?(?:\s*[A-Z]{2,5})?)`)
 
 const (
 	// quotaCooldownFallback applies when the upstream names no reset time.
@@ -328,15 +329,21 @@ func markChannelPenalty(channelId int, err *model.ErrorWithStatusCode) {
 	var until time.Time
 	if quota429Re.MatchString(err.Error.Message) {
 		until = time.Now().Add(quotaCooldownFallback)
+		parsedResetTime := false
 		if m := resetAtRe.FindStringSubmatch(err.Error.Message); m != nil {
 			ts := strings.TrimSpace(m[1])
 			if parsed, perr := time.Parse("2006-01-02 15:04:05 -0700 MST", ts); perr == nil && parsed.After(time.Now()) {
 				until = parsed
+				parsedResetTime = true
 			} else if parsed, perr := time.Parse(time.RFC3339, ts); perr == nil && parsed.After(time.Now()) {
 				until = parsed
+				parsedResetTime = true
 			}
 		}
-		if d := time.Until(until); d > quotaCooldownMax {
+		// Only cap at quotaCooldownMax when using fallback (no parsed reset time).
+		// When the provider explicitly tells us the reset time, trust it —
+		// weekly/monthly quotas can be hours/days away.
+		if !parsedResetTime && time.Until(until) > quotaCooldownMax {
 			until = time.Now().Add(quotaCooldownMax)
 		}
 	} else {
