@@ -309,13 +309,16 @@ func CacheGetRandomSatisfiedChannelExcluding(group string, model string, ignoreF
 	// 2. Untried but cooling (better than retrying a channel that already
 	//    failed in THIS request — the cooldown is a soft penalty from a
 	//    previous request, the exclude is a hard fact from this one)
-	// 3. Plain random fallback (everything excluded — small pool, degrade
-	//    rather than 503)
+	// 3. Error: all channels excluded — relay should break the retry loop
+	//    instead of re-trying exhausted channels (e.g. quota 429).
 	if len(notExcludedNotCooling) > 0 {
 		return randomTieredPick(notExcludedNotCooling, ignoreFirstPriority), nil
 	}
 	if len(notExcluded) > 0 {
 		return randomTieredPick(notExcluded, ignoreFirstPriority), nil
+	}
+	if exclude != nil && len(exclude) > 0 {
+		return nil, errors.New("all channels excluded")
 	}
 	return CacheGetRandomSatisfiedChannel(group, model, ignoreFirstPriority)
 }
