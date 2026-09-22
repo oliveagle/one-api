@@ -36,7 +36,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"sync/atomic"
+	"sync"
 
 	"github.com/gin-gonic/gin"
 
@@ -50,12 +50,15 @@ import (
 var _ adaptor.Adaptor = new(Adaptor)
 
 // retryTestCallCount drives the "error-429-then-ok" mock behavior for
-// e2e retry-failover tests. ResetRetryTestCount sets it; DoRequest
-// decrements it atomically. Returns 429 while positive, 200 after.
-var retryTestCallCount atomic.Int64
+// e2e retry-failover tests. Keyed by channel id so same-channel retries
+// still return 429 — only a failover to a DIFFERENT channel succeeds.
+var retryTestCallCount sync.Map
 
 // ResetRetryTestCount primes the counter for e2e retry tests.
-func ResetRetryTestCount(n int64) { retryTestCallCount.Store(n) }
+func ResetRetryTestCount(channelId int, n int64) { retryTestCallCount.Store(channelId, n) }
+
+// ResetAllRetryTestCounters clears all counters (test cleanup).
+func ResetAllRetryTestCounters() { retryTestCallCount.Clear() }
 
 const (
 	channelName = "mock"
@@ -181,7 +184,11 @@ func (a *Adaptor) DoRequest(c *gin.Context, meta *meta.Meta, requestBody io.Read
 	case "error-429":
 		return newJSONResponse(http.StatusTooManyRequests, synthesizeErrorBody("rate limited by mock", "rate_limit_exceeded")), nil
 	case "error-429-then-ok":
-		if retryTestCallCount.Add(-1) >= 0 {
+		chId := int(meta.ChannelId)
+		v, _ := retryTestCallCount.LoadOrStore(chId, int64(0))
+		n, _ := v.(int64)
+		if n > 0 {
+			retryTestCallCount.Store(chId, n-1)
 			return newJSONResponse(http.StatusTooManyRequests, synthesizeErrorBody("rate limited by mock", "rate_limit_exceeded")), nil
 		}
 		return newJSONResponse(http.StatusOK, synthesizeChatResponse(modelName, cannedReply, false)), nil
