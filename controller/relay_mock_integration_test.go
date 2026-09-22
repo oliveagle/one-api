@@ -455,6 +455,14 @@ func TestRelayMock_RetryFailover429(t *testing.T) {
 		extraResponsesChannel: true,
 	})
 
+	// Give channel 1 higher priority so pickFirstPriority always selects
+	// it first — guaranteeing the retry loop must exercise failover to ch2.
+	highP := int64(1)
+	if err := model.DB.Model(&model.Channel{}).Where("id = 1").Update("priority", &highP).Error; err != nil {
+		t.Fatalf("set ch1 priority: %v", err)
+	}
+	model.InitChannelCache()
+
 	rec := doRelayRequest(t, r, "Bearer sk-test", "error-429-then-ok", basicChatBody())
 
 	if rec.Code != http.StatusOK {
