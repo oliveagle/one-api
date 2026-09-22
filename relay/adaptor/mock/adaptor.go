@@ -36,6 +36,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 
 	"github.com/gin-gonic/gin"
 
@@ -47,6 +48,14 @@ import (
 )
 
 var _ adaptor.Adaptor = new(Adaptor)
+
+// retryTestCallCount drives the "error-429-then-ok" mock behavior for
+// e2e retry-failover tests. ResetRetryTestCount sets it; DoRequest
+// decrements it atomically. Returns 429 while positive, 200 after.
+var retryTestCallCount atomic.Int64
+
+// ResetRetryTestCount primes the counter for e2e retry tests.
+func ResetRetryTestCount(n int64) { retryTestCallCount.Store(n) }
 
 const (
 	channelName = "mock"
@@ -171,6 +180,11 @@ func (a *Adaptor) DoRequest(c *gin.Context, meta *meta.Meta, requestBody io.Read
 		return newJSONResponse(http.StatusOK, synthesizeResponsesResponse(modelName, cannedReply)), nil
 	case "error-429":
 		return newJSONResponse(http.StatusTooManyRequests, synthesizeErrorBody("rate limited by mock", "rate_limit_exceeded")), nil
+	case "error-429-then-ok":
+		if retryTestCallCount.Add(-1) >= 0 {
+			return newJSONResponse(http.StatusTooManyRequests, synthesizeErrorBody("rate limited by mock", "rate_limit_exceeded")), nil
+		}
+		return newJSONResponse(http.StatusOK, synthesizeChatResponse(modelName, cannedReply, false)), nil
 	case "error-500":
 		return newJSONResponse(http.StatusInternalServerError, synthesizeErrorBody("mock upstream blew up", "server_error")), nil
 	case "error-400":

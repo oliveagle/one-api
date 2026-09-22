@@ -37,6 +37,7 @@ import (
 	"github.com/songquanpeng/one-api/common/testutil"
 	"github.com/songquanpeng/one-api/middleware"
 	"github.com/songquanpeng/one-api/model"
+	"github.com/songquanpeng/one-api/relay/adaptor/mock"
 	"github.com/songquanpeng/one-api/relay/channeltype"
 	relaycontroller "github.com/songquanpeng/one-api/relay/controller"
 	"github.com/songquanpeng/one-api/relay/routing"
@@ -440,11 +441,28 @@ func TestRelayMock_Error429(t *testing.T) {
 	if rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("status = %d, want 429; body=%s", rec.Code, rec.Body.String())
 	}
-	// The error envelope should carry the upstream message/type so
-	// RelayErrorHandler's parse path is exercised end-to-end.
 	body := rec.Body.String()
 	if !strings.Contains(body, "rate_limit_exceeded") {
 		t.Errorf("error body missing upstream type: %s", body)
+	}
+}
+
+func TestRelayMock_RetryFailover429(t *testing.T) {
+	mock.ResetRetryTestCount(1)
+	t.Cleanup(func() { mock.ResetRetryTestCount(0) })
+
+	r := setupMockRelayStackWithOptions(t, mockStackOptions{
+		extraResponsesChannel: true,
+	})
+
+	rec := doRelayRequest(t, r, "Bearer sk-test", "error-429-then-ok", basicChatBody())
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (retry should failover to channel 2); body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "Hello from the mock channel") {
+		t.Errorf("response body missing mock reply: %s", body)
 	}
 }
 
