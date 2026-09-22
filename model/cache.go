@@ -5,16 +5,19 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/songquanpeng/one-api/common"
-	"github.com/songquanpeng/one-api/common/config"
-	"github.com/songquanpeng/one-api/common/logger"
-	"github.com/songquanpeng/one-api/common/random"
 	"math/rand"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"gorm.io/gorm"
+
+	"github.com/songquanpeng/one-api/common"
+	"github.com/songquanpeng/one-api/common/config"
+	"github.com/songquanpeng/one-api/common/logger"
+	"github.com/songquanpeng/one-api/common/random"
 )
 
 var (
@@ -283,8 +286,61 @@ func randomTieredPick(channels []*Channel, ignoreFirstPriority bool) *Channel {
 // degrades to the plain random pick, so a small pool never turns into "no
 // channel available".
 func CacheGetRandomSatisfiedChannelExcluding(group string, model string, ignoreFirstPriority bool, exclude map[int]bool) (*Channel, error) {
+	// When memory cache is disabled we must still honour the exclude map so
+	// the relay retry loop never re-selects a channel that already failed in
+	// this request.  We pull ALL enabled channels for (group, model) via a
+	// single DB query, filter in-process, and fall back to the plain random
+	// pick only when no candidates survive filtering.
 	if !config.MemoryCacheEnabled {
-		return GetRandomSatisfiedChannel(group, model, ignoreFirstPriority)
+		if len(exclude) == 0 {
+			return GetRandomSatisfiedChannel(group, model, ignoreFirstPriority)
+		}
+		groupCol := "`group`"
+		trueVal := "1"
+		if common.UsingPostgreSQL {
+			groupCol = `"group"`
+			trueVal = "true"
+		}
+		var channelQuery *gorm.DB
+		if ignoreFirstPriority {
+			channelQuery = DB.Where(groupCol+" = ? and model = ? and enabled = "+trueVal, group, model)
+		} else {
+			maxPrioritySubQuery := DB.Model(&Ability{}).Select("MAX(priority)").Where(groupCol+" = ? and model = ? and enabled = "+trueVal, group, model)
+			channelQuery = DB.Where(groupCol+" = ? and model = ? and enabled = "+trueVal+" and priority = (?)", group, model, maxPrioritySubQuery)
+		}
+		var abilities []Ability
+		if err := channelQuery.Find(&abilities).Error; err != nil {
+			return nil, err
+		}
+		if len(abilities) == 0 {
+			return nil, errors.New("channel not found")
+		}
+		var notExcludedNotCooling []int
+		var notExcluded []int
+		for _, a := range abilities {
+			if exclude[a.ChannelId] {
+				continue
+			}
+			notExcluded = append(notExcluded, a.ChannelId)
+			if !ChannelCoolingDown(a.ChannelId) {
+				notExcludedNotCooling = append(notExcludedNotCooling, a.ChannelId)
+			}
+		}
+		var pickId int
+		if len(notExcludedNotCooling) > 0 {
+			pickId = notExcludedNotCooling[rand.Intn(len(notExcludedNotCooling))]
+		} else if len(notExcluded) > 0 {
+			pickId = notExcluded[rand.Intn(len(notExcluded))]
+		} else if len(exclude) > 0 {
+			return nil, errors.New("all channels excluded")
+		} else {
+			return GetRandomSatisfiedChannel(group, model, ignoreFirstPriority)
+		}
+		channel := Channel{}
+		if err := DB.First(&channel, "id = ?", pickId).Error; err != nil {
+			return nil, err
+		}
+		return &channel, nil
 	}
 	channelSyncLock.RLock()
 	channels := group2model2channels[group][model]

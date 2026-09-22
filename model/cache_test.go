@@ -349,13 +349,11 @@ func TestPicker_CoolingChannelBeatsExcluded(t *testing.T) {
 		}
 	}
 
-	// Everything excluded → graceful fallback returns SOMETHING.
+	// Everything excluded → error so the relay loop breaks instead of
+	// re-trying exhausted channels (e.g. quota 429).
 	excludeAll := map[int]bool{1: true, 2: true, 3: true, 4: true}
-	ch, err := CacheGetRandomSatisfiedChannelExcluding("g", "m", false, excludeAll)
-	if err != nil {
-		t.Fatalf("all-excluded fallback should still return a channel: %v", err)
-	}
-	if ch == nil || ch.Id < 1 || ch.Id > 4 {
-		t.Fatalf("fallback returned invalid channel: %v", ch)
+	_, err := CacheGetRandomSatisfiedChannelExcluding("g", "m", false, excludeAll)
+	if err == nil {
+		t.Fatal("expected error when all channels are excluded")
 	}
 }
