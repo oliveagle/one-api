@@ -282,9 +282,8 @@ func randomTieredPick(channels []*Channel, ignoreFirstPriority bool) *Channel {
 // CacheGetRandomSatisfiedChannelExcluding picks a random candidate for
 // (group, model), preferring channels that neither already failed during this
 // request (exclude) nor are under a routing cooldown (see
-// MarkChannelCooldown). When every candidate is excluded or cooling it
-// degrades to the plain random pick, so a small pool never turns into "no
-// channel available".
+// MarkChannelCooldown). Returns an error when every candidate is excluded so
+// the relay retry loop breaks instead of re-trying exhausted channels.
 func CacheGetRandomSatisfiedChannelExcluding(group string, model string, ignoreFirstPriority bool, exclude map[int]bool) (*Channel, error) {
 	// When memory cache is disabled we must still honour the exclude map so
 	// the relay retry loop never re-selects a channel that already failed in

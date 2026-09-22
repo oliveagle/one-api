@@ -349,11 +349,63 @@ func TestPicker_CoolingChannelBeatsExcluded(t *testing.T) {
 		}
 	}
 
-	// Everything excluded → error so the relay loop breaks instead of
-	// re-trying exhausted channels (e.g. quota 429).
 	excludeAll := map[int]bool{1: true, 2: true, 3: true, 4: true}
 	_, err := CacheGetRandomSatisfiedChannelExcluding("g", "m", false, excludeAll)
 	if err == nil {
 		t.Fatal("expected error when all channels are excluded")
+	}
+}
+
+func TestCacheGetRandomSatisfiedChannelExcluding_DBPathHonoursExclude(t *testing.T) {
+	setupMockDB(t)
+	prev := config.MemoryCacheEnabled
+	config.MemoryCacheEnabled = false
+	defer func() { config.MemoryCacheEnabled = prev }()
+	ResetChannelCooldowns()
+	t.Cleanup(ResetChannelCooldowns)
+
+	group, model := "dbgroup", "dbmodel"
+	for id := 1; id <= 4; id++ {
+		ch := &Channel{
+			Id:          id,
+			Type:        1,
+			Key:         fmt.Sprintf("sk-%d", id),
+			Status:      ChannelStatusEnabled,
+			Name:        fmt.Sprintf("ch%d", id),
+			Models:      model,
+			Group:       group,
+			CreatedTime: time.Now().Unix(),
+		}
+		if err := DB.Create(ch).Error; err != nil {
+			t.Fatalf("seed channel %d: %v", id, err)
+		}
+		p := int64(0)
+		ab := &Ability{
+			Group:     group,
+			Model:     model,
+			ChannelId: id,
+			Enabled:   true,
+			Priority:  &p,
+		}
+		if err := DB.Create(ab).Error; err != nil {
+			t.Fatalf("seed ability %d: %v", id, err)
+		}
+	}
+
+	exclude := map[int]bool{1: true, 2: true}
+	for i := 0; i < 50; i++ {
+		ch, err := CacheGetRandomSatisfiedChannelExcluding(group, model, false, exclude)
+		if err != nil {
+			t.Fatalf("pick: %v", err)
+		}
+		if ch.Id == 1 || ch.Id == 2 {
+			t.Fatalf("DB path picked excluded channel %d", ch.Id)
+		}
+	}
+
+	excludeAll := map[int]bool{1: true, 2: true, 3: true, 4: true}
+	_, err := CacheGetRandomSatisfiedChannelExcluding(group, model, false, excludeAll)
+	if err == nil {
+		t.Fatal("DB path: expected error when all channels are excluded")
 	}
 }
