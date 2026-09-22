@@ -86,8 +86,13 @@ func TestShouldRetry_DrivesCooldownDecision(t *testing.T) {
 	if shouldRetry(newCtx(false), http.StatusOK) {
 		t.Fatal("2xx must not be retryable")
 	}
-	// When the caller pinned a specific channel there is nowhere to fail over to.
-	if shouldRetry(newCtx(true), http.StatusTooManyRequests) {
-		t.Fatal("an explicitly targeted channel must not trigger failover")
+	// When the caller pinned a specific channel, 429 (quota exhausted) must
+	// still retry so the session can failover to a channel with capacity.
+	if !shouldRetry(newCtx(true), http.StatusTooManyRequests) {
+		t.Fatal("429 must be retryable even on a pinned channel")
+	}
+	// Other errors on a pinned channel have nowhere to fail over to.
+	if shouldRetry(newCtx(true), http.StatusInternalServerError) {
+		t.Fatal("5xx on a pinned channel must not trigger failover")
 	}
 }

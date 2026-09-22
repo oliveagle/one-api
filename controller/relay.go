@@ -207,7 +207,9 @@ func describeUpstream429(upstream string) string {
 
 func shouldRetry(c *gin.Context, statusCode int) bool {
 	if _, ok := c.Get(ctxkey.SpecificChannelId); ok {
-		return false
+		if statusCode != http.StatusTooManyRequests {
+			return false
+		}
 	}
 	if statusCode == http.StatusTooManyRequests {
 		return true

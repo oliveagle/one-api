@@ -51,7 +51,7 @@ func TestShouldRetry(t *testing.T) {
 		{"no specific channel, 502", http.StatusBadGateway, false, true},
 		{"no specific channel, 200", http.StatusOK, false, false},
 		{"no specific channel, 400", http.StatusBadRequest, false, false},
-		{"specific channel, 429", http.StatusTooManyRequests, true, false},
+		{"specific channel, 429", http.StatusTooManyRequests, true, true},
 		{"specific channel, 500", http.StatusInternalServerError, true, false},
 	}
 	for _, tc := range cases {
