@@ -126,8 +126,8 @@ func Relay(c *gin.Context) {
 			channel, err = dbmodel.CacheGetRandomSatisfiedChannelExcluding(group, originalModel, i != retryTimes, exclude)
 		}
 		if err != nil {
-			if err.Error() == "all channels excluded" {
-				logger.Errorf(ctx, "all channels excluded, no more alternatives: %+v", err)
+			if err.Error() == "all channels excluded" || err.Error() == "no available channel" {
+				logger.Errorf(ctx, "all channels exhausted, no more alternatives: %+v", err)
 				break
 			}
 			logger.Warnf(ctx, "choose channel for retry failed (will try next): %+v", err)
