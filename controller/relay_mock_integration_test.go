@@ -448,7 +448,7 @@ func TestRelayMock_Error429(t *testing.T) {
 }
 
 func TestRelayMock_RetryFailover429(t *testing.T) {
-	mock.ResetRetryTestCount(1, 1)
+	mock.ResetRetryTestCount(1, 100)
 	t.Cleanup(func() { mock.ResetAllRetryTestCounters() })
 
 	r := setupMockRelayStackWithOptions(t, mockStackOptions{
