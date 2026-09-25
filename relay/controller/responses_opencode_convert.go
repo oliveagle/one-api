@@ -341,7 +341,7 @@ func opencodeChatStreamToResponsesStream(chatLine string, streamState *opencodeS
 				"object":     "response",
 				"created_at": time.Now().Unix(),
 				"model":      streamState.model,
-				"status":     "completed",
+				"status":     "in_progress",
 				"output":     []any{},
 			},
 		}))
@@ -352,7 +352,7 @@ func opencodeChatStreamToResponsesStream(chatLine string, streamState *opencodeS
 				"object":     "response",
 				"created_at": time.Now().Unix(),
 				"model":      streamState.model,
-				"status":     "completed",
+				"status":     "in_progress",
 				"output":     []any{},
 			},
 		}))
@@ -407,43 +407,48 @@ func opencodeChatStreamToResponsesStream(chatLine string, streamState *opencodeS
 			}))
 		}
 
-		// tool_calls delta → function_call_arguments.delta
+		// tool_calls delta → per-index function_call items.
+		//
+		// Chat models may emit several tool calls in one turn (parallel tool
+		// calls), interleaving their argument deltas across chunks. Each delta
+		// carries the tool-call `index`; tracking state per index keeps every
+		// call's id/name/arguments separate instead of concatenating them into
+		// a single, invalid function_call.
 		if delta.ToolCalls != nil {
 			for _, tc := range delta.ToolCalls {
-				fnName := ""
-				fnArgs := ""
-				if tc.Function.Name != "" {
-					fnName = tc.Function.Name
+				st := opencodeToolStateFor(streamState, tc)
+				if tc.Id != "" && st.callId == "" {
+					st.callId = tc.Id
 				}
-				if s, ok := tc.Function.Arguments.(string); ok && s != "" {
-					fnArgs = s
-					streamState.toolArgs += fnArgs
+				if tc.Function.Name != "" && st.name == "" {
+					st.name = tc.Function.Name
 				}
-				if fnName != "" && !streamState.hasToolItem {
-					streamState.hasToolItem = true
-					streamState.toolItemId = opencodeGenID("fc")
-					streamState.toolCallId = tc.Id
-					streamState.toolName = fnName
+
+				if !st.added && (st.callId != "" || st.name != "") {
+					st.added = true
 					events = append(events, opencodeSSEEvent("response.output_item.added", map[string]any{
 						"type":         "response.output_item.added",
-						"output_index": 1,
+						"output_index": st.outputIndex,
 						"item": map[string]any{
 							"type":      "function_call",
-							"id":        streamState.toolItemId,
+							"id":        st.itemId,
 							"status":    "in_progress",
-							"call_id":   tc.Id,
-							"name":      fnName,
-							"arguments": streamState.toolArgs,
+							"call_id":   st.callId,
+							"name":      st.name,
+							"arguments": st.args,
 						},
 					}))
 				}
-				if fnArgs != "" {
+
+				if argDelta := opencodeToolArgsString(tc.Function.Arguments); argDelta != "" {
+					st.args += argDelta
 					events = append(events, opencodeSSEEvent("response.function_call_arguments.delta", map[string]any{
 						"type":         "response.function_call_arguments.delta",
-						"item_id":      streamState.toolItemId,
-						"output_index": 1,
-						"arguments":    fnArgs,
-						"call_id":      tc.Id,
+						"item_id":      st.itemId,
+						"output_index": st.outputIndex,
+						"call_id":      st.callId,
+						"delta":        argDelta,
+						"arguments":    argDelta,
 					}))
 				}
 			}
@@ -486,44 +491,18 @@ func opencodeChatStreamToResponsesStream(chatLine string, streamState *opencodeS
 					},
 				}))
 			}
-			if streamState.hasToolItem {
+			// Close every open function_call item (there may be several).
+			for _, key := range streamState.toolOrder {
+				st := streamState.toolCalls[key]
+				if st.done {
+					continue
+				}
+				st.done = true
 				events = append(events, opencodeSSEEvent("response.output_item.done", map[string]any{
 					"type":         "response.output_item.done",
-					"output_index": 1,
-					"item": map[string]any{
-						"type":      "function_call",
-						"id":        streamState.toolItemId,
-						"status":    "completed",
-						"call_id":   streamState.toolCallId,
-						"name":      streamState.toolName,
-						"arguments": streamState.toolArgs,
-					},
+					"output_index": st.outputIndex,
+					"item":         st.outputItem("completed"),
 				}))
-			}
-			// Build output array for the completed response
-			var outputItems []any
-			if streamState.hasTextItem {
-				outputItems = append(outputItems, map[string]any{
-					"type":   "message",
-					"id":     streamState.textItemId,
-					"status": "completed",
-					"role":   "assistant",
-					"content": []any{map[string]any{
-						"type":        "output_text",
-						"text":        streamState.textContent,
-						"annotations": []any{},
-					}},
-				})
-			}
-			if streamState.hasToolItem {
-				outputItems = append(outputItems, map[string]any{
-					"type":      "function_call",
-					"id":        streamState.toolItemId,
-					"status":    "completed",
-					"call_id":   streamState.toolCallId,
-					"name":      streamState.toolName,
-					"arguments": streamState.toolArgs,
-				})
 			}
 
 			var usageData any
@@ -541,7 +520,7 @@ func opencodeChatStreamToResponsesStream(chatLine string, streamState *opencodeS
 					"created_at": time.Now().Unix(),
 					"model":      streamState.model,
 					"status":     "completed",
-					"output":     outputItems,
+					"output":     opencodeBuildOutput(streamState),
 					"usage":      usageData,
 				},
 			}))
@@ -564,11 +543,117 @@ type opencodeStreamState struct {
 	hasTextItem bool
 	textItemId  string
 	textContent string
-	hasToolItem bool
-	toolItemId  string
-	toolCallId  string
-	toolName    string
-	toolArgs    string
+
+	// Parallel tool calls: one state per upstream tool-call index. Chat
+	// providers interleave the argument deltas of concurrent calls, so state
+	// must be keyed by index rather than shared across the whole stream.
+	toolCalls map[int]*opencodeToolCallState
+	// toolOrder preserves first-seen order so output is deterministic and the
+	// emitted output_index values line up with the final response.output array.
+	toolOrder []int
+	// nextOutputIndex is the next output_index handed to a new item. Index 0 is
+	// reserved for the assistant text message, so this starts at 1.
+	nextOutputIndex int
+	// nextSyntheticIndex supplies unique keys for upstreams that reuse index 0
+	// for every call instead of incrementing it.
+	nextSyntheticIndex int
+}
+
+// opencodeToolCallState accumulates one streamed function_call.
+type opencodeToolCallState struct {
+	itemId      string
+	callId      string
+	name        string
+	args        string
+	outputIndex int
+	added       bool
+	done        bool
+}
+
+// outputItem renders the function_call item for output_item.*/response.output.
+func (st *opencodeToolCallState) outputItem(status string) map[string]any {
+	return map[string]any{
+		"type":      "function_call",
+		"id":        st.itemId,
+		"status":    status,
+		"call_id":   st.callId,
+		"name":      st.name,
+		"arguments": st.args,
+	}
+}
+
+// opencodeToolStateFor resolves (and lazily creates) the state for one streaming
+// tool-call delta. Providers normally increment `index`, but some send every
+// call as index 0; when the same slot is reused for a call that already has a
+// different name, treat the delta as a brand new tool call.
+func opencodeToolStateFor(s *opencodeStreamState, tc model.Tool) *opencodeToolCallState {
+	if s.toolCalls == nil {
+		s.toolCalls = map[int]*opencodeToolCallState{}
+	}
+
+	key := tc.Index
+	if st, ok := s.toolCalls[key]; ok {
+		if tc.Function.Name != "" && st.name != "" && st.name != tc.Function.Name {
+			key = s.nextSyntheticIndex
+			s.nextSyntheticIndex++
+		}
+	}
+
+	st, ok := s.toolCalls[key]
+	if !ok {
+		st = &opencodeToolCallState{
+			itemId:      opencodeGenID("fc"),
+			outputIndex: s.nextOutputIndex,
+		}
+		s.nextOutputIndex++
+		s.toolCalls[key] = st
+		s.toolOrder = append(s.toolOrder, key)
+	}
+	return st
+}
+
+// opencodeBuildOutput assembles the response.output array from stream state:
+// the assistant text message first (output_index 0), then each function_call.
+func opencodeBuildOutput(s *opencodeStreamState) []any {
+	var items []any
+	if s.hasTextItem {
+		items = append(items, map[string]any{
+			"type":   "message",
+			"id":     s.textItemId,
+			"status": "completed",
+			"role":   "assistant",
+			"content": []any{map[string]any{
+				"type":        "output_text",
+				"text":        s.textContent,
+				"annotations": []any{},
+			}},
+		})
+	}
+	for _, key := range s.toolOrder {
+		items = append(items, s.toolCalls[key].outputItem("completed"))
+	}
+	if items == nil {
+		items = []any{}
+	}
+	return items
+}
+
+// opencodeToolArgsString normalizes a streamed tool_call arguments value to a
+// string. Compliant providers send a partial JSON string; a few send an object,
+// which is re-marshaled so it is not silently dropped.
+func opencodeToolArgsString(v any) string {
+	switch args := v.(type) {
+	case nil:
+		return ""
+	case string:
+		return args
+	default:
+		b, err := json.Marshal(args)
+		if err != nil {
+			return ""
+		}
+		return string(b)
+	}
 }
 
 // opencodeGenID 生成 Responses API 风格的 ID。

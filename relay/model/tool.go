@@ -3,6 +3,11 @@ package model
 import "encoding/json"
 
 type Tool struct {
+	// Index identifies which tool call a streaming delta belongs to. Chat
+	// Completions stream chunks carry it on every tool_call delta; request-side
+	// tool declarations omit it (hence omitempty). Without this field parallel
+	// tool calls collapse into index 0 and their argument deltas interleave.
+	Index    int      `json:"index,omitempty"`
 	Id       string   `json:"id,omitempty"`
 	Type     string   `json:"type,omitempty"` // when splicing claude tools stream messages, it is empty
 	Function Function `json:"function"`

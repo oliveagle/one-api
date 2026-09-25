@@ -797,7 +797,7 @@ func opencodeRelayResponsesStreamFromChat(c *gin.Context, resp *http.Response, r
 	c.Writer.Header().Set("Connection", "keep-alive")
 	c.Writer.Header().Set("X-Accel-Buffering", "no")
 
-	streamState := &opencodeStreamState{model: requestModel}
+	streamState := &opencodeStreamState{model: requestModel, nextOutputIndex: 1}
 	var lastUsage *relaymodel.Usage
 
 	scanner := bufio.NewScanner(resp.Body)
@@ -830,20 +830,24 @@ func opencodeRelayResponsesStreamFromChat(c *gin.Context, resp *http.Response, r
 	// Guarantee response.completed is emitted even if no finish_reason was received.
 	// Some providers send a usage-only final chunk or just [DONE] without finish_reason.
 	if !streamState.completed {
+		respID := streamState.respId
+		if respID == "" {
+			respID = opencodeGenID("resp")
+		}
+		usageData := map[string]any{"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+		if lastUsage != nil {
+			usageData = opencodeMapUsage(lastUsage)
+		}
 		completedEvent := opencodeSSEEvent("response.completed", map[string]any{
 			"type": "response.completed",
 			"response": map[string]any{
-				"id":         streamState.respId,
+				"id":         respID,
 				"object":     "response",
 				"created_at": time.Now().Unix(),
 				"model":      streamState.model,
 				"status":     "completed",
-				"output":     []any{},
-				"usage": map[string]any{
-					"input_tokens":  0,
-					"output_tokens": 0,
-					"total_tokens":  0,
-				},
+				"output":     opencodeBuildOutput(streamState),
+				"usage":      usageData,
 			},
 		})
 		_, _ = fmt.Fprint(c.Writer, completedEvent)
