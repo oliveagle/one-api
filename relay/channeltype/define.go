@@ -70,4 +70,7 @@ const (
 	// protocol conversion so coding-agent clients (cx/codex) can use the
 	// Responses API while opencode only speaks Chat Completions.
 	OpenCode
+	// SystemOne is Laya's System-1 decision API (POST /v1/systemone).
+	// Not an OpenAI protocol: relayed as a transparent passthrough.
+	SystemOne
 )

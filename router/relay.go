@@ -31,6 +31,13 @@ func SetRelayRouter(router *gin.Engine) {
 		routingCtlRouter.POST("/unpin", controller.UnpinClientRoutingNode)
 	}
 
+	// Laya System-1 passthrough. Token-authenticated but deliberately NOT behind
+	// Distribute(): the handler resolves the channel itself (body "model" or the
+	// soft-decider default), because the payload is Laya's own schema.
+	systemOneRouter := router.Group("/v1")
+	systemOneRouter.Use(middleware.RelayPanicRecover(), middleware.TokenAuth())
+	systemOneRouter.POST("/systemone", controller.RelaySystemOne)
+
 	relayV1Router := router.Group("/v1")
 	relayV1Router.Use(middleware.RelayPanicRecover(), middleware.TokenAuth(), middleware.Distribute())
 	{

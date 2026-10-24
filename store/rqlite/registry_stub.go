@@ -75,3 +75,9 @@ var _ = context.Background
 func IsActive() bool {
 	return false
 }
+
+// IsLeader reports whether this node may run schema migrations. No embedded
+// RQLite store exists on no-CGO builds, so there is exactly one writer: us.
+func IsLeader() bool {
+	return true
+}
