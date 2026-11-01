@@ -45,6 +45,9 @@ var relayExpectedRoutes = []struct {
 	{"POST", "/v1/audio/translations"},
 	{"POST", "/v1/audio/speech"},
 	{"POST", "/v1/moderations"},
+
+	// Laya System-1 decision API (transparent passthrough).
+	{"POST", "/v1/systemone"},
 }
 
 // relayExpectedNotImplemented lists the routes that are intentionally

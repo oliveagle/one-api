@@ -21,6 +21,15 @@ export const CHANNEL_OPTIONS = [
     color: 'blue',
     description: 'OpenCode 直连，URL 自动指向 opencode.ai，无需配置 Base URL',
   },
+  {
+    key: 58,
+    text: 'Command Code (CLI)',
+    value: 58,
+    color: 'purple',
+    description:
+      'Command Code 的 CLI 端点 /alpha/generate：Go 套餐的 key 只有这个端点可用（Provider API 一律 403）。' +
+      '适配器负责把 chat 请求翻译成 CLI 的请求体、再把 CLI 的事件流翻译回 chat 补全；上游只接受流式请求，非流式请求由本侧聚合。',
+  },
   {key: 14, text: 'Anthropic', value: 14, color: 'black'},
   { key: 33, text: 'AWS', value: 33, color: 'black' },
   {key: 3, text: 'Azure', value: 3, color: 'olive'},

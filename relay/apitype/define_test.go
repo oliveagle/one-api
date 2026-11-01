@@ -32,6 +32,7 @@ func TestApitypeDistinct(t *testing.T) {
 		{Proxy, "Proxy"},
 		{Replicate, "Replicate"},
 		{Mock, "Mock"},
+		{CommandCode, "CommandCode"},
 	} {
 		if prev, ok := seen[name.id]; ok {
 			t.Errorf("id collision: %s and %s share id %d", prev, name.name, name.id)
@@ -51,5 +52,8 @@ func TestDummyUpperBound(t *testing.T) {
 	}
 	if Dummy <= Mock {
 		t.Fatalf("Dummy (%d) must exceed Mock (%d)", Dummy, Mock)
+	}
+	if Dummy <= CommandCode {
+		t.Fatalf("Dummy (%d) must exceed CommandCode (%d)", Dummy, CommandCode)
 	}
 }

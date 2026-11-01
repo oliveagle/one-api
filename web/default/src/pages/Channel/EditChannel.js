@@ -69,6 +69,7 @@ const EditChannel = () => {
     support_responses: false,
     responses_only: false,
     skip_reasoning_injection: false,
+    commandcode_zdr: false,
   });
   const handleInputChange = (e, { name, value }) => {
     setInputs((inputs) => ({ ...inputs, [name]: value }));
@@ -619,6 +620,14 @@ const EditChannel = () => {
                 name='skip_reasoning_injection'
                 onChange={handleConfigCheckbox}
               />
+              {inputs.type === 58 && (
+                <Form.Checkbox
+                  checked={config.commandcode_zdr === true}
+                  label='Command Code 零数据保留（x-cmd-zdr: 1，只走不留存的上游，通常更贵）'
+                  name='commandcode_zdr'
+                  onChange={handleConfigCheckbox}
+                />
+              )}
             </Form.Group>
             <Form.Input
               label='默认模型（default_model）——请求模型=渠道名 时转发到该模型；渠道名/模型名 可访问渠道模型列表'

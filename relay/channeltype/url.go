@@ -62,10 +62,11 @@ var ChannelBaseURLs = []string{
 	"https://api.openai.com",     // 55 (OpenAIResponses — uses same base as OpenAI)
 	"https://opencode.ai/zen/go", // 56 (OpenCode — hardcoded in provider registry)
 	"",                           // SystemOne: base_url is the full upstream root
+	"https://api.commandcode.ai", // CommandCode (/alpha/generate)
 }
 
 func init() {
-	if len(ChannelBaseURLs) != SystemOne+1 {
+	if len(ChannelBaseURLs) != CommandCode+1 {
 		panic("channel base urls length not match")
 	}
 }

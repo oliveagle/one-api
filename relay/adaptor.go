@@ -9,6 +9,7 @@ import (
 	"github.com/songquanpeng/one-api/relay/adaptor/baidu"
 	"github.com/songquanpeng/one-api/relay/adaptor/cloudflare"
 	"github.com/songquanpeng/one-api/relay/adaptor/cohere"
+	"github.com/songquanpeng/one-api/relay/adaptor/commandcode"
 	"github.com/songquanpeng/one-api/relay/adaptor/coze"
 	"github.com/songquanpeng/one-api/relay/adaptor/deepl"
 	"github.com/songquanpeng/one-api/relay/adaptor/gemini"
@@ -67,6 +68,8 @@ func GetAdaptor(apiType int) adaptor.Adaptor {
 		return &replicate.Adaptor{}
 	case apitype.Mock:
 		return &mock.Adaptor{}
+	case apitype.CommandCode:
+		return &commandcode.Adaptor{}
 	}
 	return nil
 }

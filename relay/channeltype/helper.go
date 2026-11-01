@@ -43,6 +43,8 @@ func ToAPIType(channelType int) int {
 		apiType = apitype.Proxy
 	case Mock:
 		apiType = apitype.Mock
+	case CommandCode:
+		apiType = apitype.CommandCode
 	}
 
 	return apiType

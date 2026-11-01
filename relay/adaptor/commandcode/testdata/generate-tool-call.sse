@@ -1,0 +1,22 @@
+{"type":"start"}
+{"type":"start-step","request":{},"warnings":[]}
+{"type":"text-start","id":"txt-0"}
+{"type":"text-delta","id":"txt-0","text":"I'll check the weather in"}
+{"type":"text-delta","id":"txt-0","text":" Beijing for"}
+{"type":"text-delta","id":"txt-0","text":" you."}
+{"type":"tool-input-start","id":"call_00_vw63ukf8fnwfeqo0jzzhc4vl","toolName":"get_weather","dynamic":false}
+{"type":"tool-input-delta","id":"call_00_vw63ukf8fnwfeqo0jzzhc4vl","delta":"{"}
+{"type":"tool-input-delta","id":"call_00_vw63ukf8fnwfeqo0jzzhc4vl","delta":"\""}
+{"type":"tool-input-delta","id":"call_00_vw63ukf8fnwfeqo0jzzhc4vl","delta":"city"}
+{"type":"tool-input-delta","id":"call_00_vw63ukf8fnwfeqo0jzzhc4vl","delta":"\""}
+{"type":"tool-input-delta","id":"call_00_vw63ukf8fnwfeqo0jzzhc4vl","delta":": "}
+{"type":"tool-input-delta","id":"call_00_vw63ukf8fnwfeqo0jzzhc4vl","delta":"\""}
+{"type":"tool-input-delta","id":"call_00_vw63ukf8fnwfeqo0jzzhc4vl","delta":"Beijing"}
+{"type":"tool-input-delta","id":"call_00_vw63ukf8fnwfeqo0jzzhc4vl","delta":"\""}
+{"type":"tool-input-delta","id":"call_00_vw63ukf8fnwfeqo0jzzhc4vl","delta":"}"}
+{"type":"tool-input-end","id":"call_00_vw63ukf8fnwfeqo0jzzhc4vl"}
+{"type":"tool-call","toolCallId":"call_00_vw63ukf8fnwfeqo0jzzhc4vl","toolName":"get_weather","input":{"city":"Beijing"}}
+{"type":"text-end","id":"txt-0"}
+{"type":"finish-step","finishReason":"tool-calls","rawFinishReason":"tool_calls","usage":{"inputTokens":7850,"inputTokenDetails":{"noCacheTokens":426,"cacheReadTokens":7424},"outputTokens":48,"outputTokenDetails":{"textTokens":48,"reasoningTokens":0},"totalTokens":7898,"raw":{"prompt_tokens":7850,"completion_tokens":48,"total_tokens":7898,"prompt_tokens_details":{"cached_tokens":7424},"completion_tokens_details":{"reasoning_tokens":0,"accepted_prediction_tokens":0,"rejected_prediction_tokens":0}},"reasoningTokens":0,"cachedInputTokens":7424},"providerMetadata":{"novita":{"acceptedPredictionTokens":0,"rejectedPredictionTokens":0}},"response":{"id":"858acee8ff8d3814f5b6de77f4b74bba","timestamp":"2026-11-01T14:46:23.000Z","modelId":"deepseek/deepseek-v4.1-flash-1017-cm","headers":{"access-control-allow-origin":"*","cache-control":"no-cache","cf-cache-status":"DYNAMIC","cf-ray":"a53bb043799d25ca-NRT","connection":"close","content-type":"text/event-stream","date":"Sun, 01 Nov 2026 14:46:23 GMT","server":"cloudflare","set-cookie":"__cf_bm=HEcCUl6PxHWwtdP.DygNY_FZ3D2g4Ch6EZbYssc1MF0-1793544381.999559-1.0.1.1-vf1GtLc8FQbrdeZcITL2GPR7LHvW5JjdFW9bVgjbSazZa_mq3E.MVA_YHGIp5tzMHxJKdr9H8ZS2UmP6lkhq1M20HS8PjVbfkT8lLnuCXvSudyu4CNNCiy0P19Al4KOv; HttpOnly; SameSite=None; Secure; Path=/; Domain=novita.ai; Expires=Sun, 01 Nov 2026 15:16:23 GMT","transfer-encoding":"chunked","via":"1.1 Caddy","x-fusion-transport":"embedded","x-ratelimit-limit-requests":"21962","x-ratelimit-limit-tokens":"1996500000","x-ratelimit-remaining-requests":"19359","x-ratelimit-remaining-tokens":"393216535","x-ratelimit-reset-requests":"7s","x-ratelimit-reset-tokens":"48s","x-request-id":"","x-trace-id":"858acee8ff8d3814f5b6de77f4b74bba"}}}
+{"type":"finish","finishReason":"tool-calls","rawFinishReason":"tool_calls","totalUsage":{"inputTokens":7850,"inputTokenDetails":{"noCacheTokens":426,"cacheReadTokens":7424},"outputTokens":48,"outputTokenDetails":{"textTokens":48,"reasoningTokens":0},"totalTokens":7898,"reasoningTokens":0,"cachedInputTokens":7424}}
+{"type":"provider-metadata","providerMetadata":{"novita":{"acceptedPredictionTokens":0,"rejectedPredictionTokens":0}}}

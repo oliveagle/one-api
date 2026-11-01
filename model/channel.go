@@ -74,6 +74,11 @@ type ChannelConfig struct {
 	// such channels (the default chat probe would 404 and auto-disable
 	// the channel), and relay routing treats them as native responses.
 	ResponsesOnly bool `json:"responses_only,omitempty"`
+	// CommandCodeZDR asks Command Code for Zero Data Retention, as its CLI
+	// asks with CMD_ZDR=1 (header x-cmd-zdr: 1): requests may only be served
+	// by upstreams that keep no prompts or replies, which usually costs more
+	// and fails outright for a model with no such upstream.
+	CommandCodeZDR bool `json:"commandcode_zdr,omitempty"`
 	// DefaultModel is the upstream model served when the channel is
 	// addressed by its bare name (request model == channel name), letting
 	// clients whose picker only switches models — not providers (e.g.

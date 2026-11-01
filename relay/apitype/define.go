@@ -29,6 +29,11 @@ const (
 	// per-request via the X-Mock-Behavior header, see
 	// relay/adaptor/mock/adaptor.go.
 	Mock
+	// CommandCode is Command Code's CLI endpoint (/alpha/generate), which
+	// speaks neither OpenAI nor any other public protocol: the adaptor
+	// converts chat completions to and from the CLI's own request/event
+	// format. See relay/adaptor/commandcode.
+	CommandCode
 
 	Dummy // this one is only for count, do not add any channel after this
 )

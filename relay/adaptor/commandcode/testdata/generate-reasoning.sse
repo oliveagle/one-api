@@ -1,0 +1,25 @@
+{"type":"start"}
+{"type":"start-step","request":{},"warnings":[]}
+{"type":"reasoning-start","id":"reasoning-0"}
+{"type":"reasoning-delta","id":"reasoning-0","text":"We"}
+{"type":"reasoning-delta","id":"reasoning-0","text":" need answer simple"}
+{"type":"reasoning-delta","id":"reasoning-0","text":" but"}
+{"type":"reasoning-delta","id":"reasoning-0","text":" \""}
+{"type":"reasoning-delta","id":"reasoning-0","text":"Think first\" maybe need"}
+{"type":"reasoning-delta","id":"reasoning-0","text":" compute."}
+{"type":"reasoning-delta","id":"reasoning-0","text":" 17*23 ="}
+{"type":"reasoning-delta","id":"reasoning-0","text":" 17"}
+{"type":"reasoning-delta","id":"reasoning-0","text":"*"}
+{"type":"reasoning-delta","id":"reasoning-0","text":"20 +"}
+{"type":"reasoning-delta","id":"reasoning-0","text":"17*3=340+"}
+{"type":"reasoning-delta","id":"reasoning-0","text":"51=391. Respond"}
+{"type":"reasoning-delta","id":"reasoning-0","text":" t"}
+{"type":"reasoning-delta","id":"reasoning-0","text":"erse"}
+{"type":"reasoning-delta","id":"reasoning-0","text":"."}
+{"type":"reasoning-end","id":"reasoning-0"}
+{"type":"text-start","id":"txt-0"}
+{"type":"text-delta","id":"txt-0","text":"391"}
+{"type":"text-end","id":"txt-0"}
+{"type":"finish-step","finishReason":"stop","rawFinishReason":"stop","usage":{"inputTokens":45,"inputTokenDetails":{"noCacheTokens":45,"cacheReadTokens":0},"outputTokens":39,"outputTokenDetails":{"textTokens":2,"reasoningTokens":37},"totalTokens":84,"raw":{"prompt_tokens":45,"completion_tokens":39,"total_tokens":84,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":37,"accepted_prediction_tokens":0,"rejected_prediction_tokens":0}},"reasoningTokens":37,"cachedInputTokens":0},"providerMetadata":{"novita":{"acceptedPredictionTokens":0,"rejectedPredictionTokens":0}},"response":{"id":"cff86f723e57b0c1cb0917a681fe4b65","timestamp":"2026-11-01T14:47:46.000Z","modelId":"deepseek/deepseek-v4.1-flash-1017-cm","headers":{"access-control-allow-origin":"*","cache-control":"no-cache","cf-cache-status":"DYNAMIC","cf-ray":"a53bb24a1df3e356-NRT","connection":"close","content-type":"text/event-stream","date":"Sun, 01 Nov 2026 14:47:46 GMT","server":"cloudflare","set-cookie":"__cf_bm=.lNLD0Zmiw0EORB2H5k.6JR15q4MVYuNIWRf0o8XWPI-1793544464.9776933-1.0.1.1-ea6OkRK_jmXxUTxioH62PAiUHe6igDpkYpVHUNiUQ3Jvx4aGZ9lunllld3jka8bF9i1NeauJbaimh4kE0rI0xNjlTuuckmjsfbbp9ycrxNjiOM79ZSPOczokyUyOpDx7; HttpOnly; SameSite=None; Secure; Path=/; Domain=novita.ai; Expires=Sun, 01 Nov 2026 15:17:46 GMT","transfer-encoding":"chunked","via":"1.1 Caddy","x-fusion-transport":"embedded","x-ratelimit-limit-requests":"21962","x-ratelimit-limit-tokens":"1996500000","x-ratelimit-remaining-requests":"14258","x-ratelimit-remaining-tokens":"1396549077","x-ratelimit-reset-requests":"21s","x-ratelimit-reset-tokens":"18s","x-request-id":"","x-trace-id":"cff86f723e57b0c1cb0917a681fe4b65"}}}
+{"type":"finish","finishReason":"stop","rawFinishReason":"stop","totalUsage":{"inputTokens":45,"inputTokenDetails":{"noCacheTokens":45,"cacheReadTokens":0},"outputTokens":39,"outputTokenDetails":{"textTokens":2,"reasoningTokens":37},"totalTokens":84,"reasoningTokens":37,"cachedInputTokens":0}}
+{"type":"provider-metadata","providerMetadata":{"novita":{"acceptedPredictionTokens":0,"rejectedPredictionTokens":0}}}

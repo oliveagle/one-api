@@ -73,4 +73,11 @@ const (
 	// SystemOne is Laya's System-1 decision API (POST /v1/systemone).
 	// Not an OpenAI protocol: relayed as a transparent passthrough.
 	SystemOne
+	// CommandCode is Command Code's CLI endpoint (POST /alpha/generate),
+	// which is the ONLY endpoint a Go-plan key is accepted at: the Provider
+	// API answers 403 for those keys, and /alpha/generate refuses anything
+	// that doesn't look like the CLI (params.stream must be true).
+	// relay/adaptor/commandcode rewrites a chat request into the CLI's
+	// envelope and its event stream back into chat completions.
+	CommandCode
 )
