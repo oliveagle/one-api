@@ -4,3 +4,6 @@
 [submodule "submodules/litellm_lb"]
 	path = submodules/litellm_lb
 	url = git@github.com:oliveagle/litellm_lb.git
+[submodule "submodules/magpie"]
+	path = submodules/magpie
+	url = https://github.com/yetone/magpie.git
