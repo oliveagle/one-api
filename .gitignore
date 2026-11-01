@@ -30,3 +30,7 @@ temp
 .bitx/
 .codegraph/
 __pycache__/
+
+# Local CLI/agent runtime state (per-checkout, never source)
+.commandcode/
+.opencode/
